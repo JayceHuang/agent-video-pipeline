@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "profile_id": "voxcpm2-natural-stable-v1",
+  "analysis": {
+    "sample_rate": 16000,
+    "speech_gate_dbfs": -32.0,
+    "baseline_window_s": 2.5,
+    "baseline_hop_s": 0.5,
+    "boundary_window_s": 0.4
+  },
+  "hard_limits": {
+    "active_1s_p90_p10_db": 3.5,
+    "adjacent_caption_rms_delta_db": 2.0,
+    "scene_boundary_rms_delta_db": 2.0,
+    "adjacent_retime_factor_delta": 0.05,
+    "baseline_f0_max_step_semitones": 5.0,
+    "baseline_f0_p95_step_semitones": 3.0,
+    "baseline_centroid_max_step_semitones": 5.0,
+    "baseline_centroid_p95_step_semitones": 3.5
+  },
+  "generation": {
+    "episode_as_single_acoustic_take": true,
+    "candidate_seeds": 3,
+    "maximum_candidate_seeds": 5,
+    "preferred_global_retime_range": [0.97, 1.03],
+    "hard_global_retime_range": [0.95, 1.05],
+    "chunk_fallback_max_duration_s": 60,
+    "chunk_fallback_overlap_context_s": 2.5
+  },
+  "voice_clone": {
+    "mode": "voxcpm2_ultimate_cloning",
+    "source_path": "/Users/jaycehuang/Library/CloudStorage/SynologyDrive-Obsidian/66_自媒体/木哥原始音频/木哥音频.mp3",
+    "prompt_wav_path": "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/audio/muge-golden-prompt-v1.wav",
+    "reference_wav_path": "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/audio/muge-golden-prompt-v1.wav",
+    "prompt_text": "大家在去做GEO的时候，为了让所有的AI平台都去推荐你，一定是全平台的分发而不是只能铺一个渠道。",
+    "extract_start_s": 310.95,
+    "extract_duration_s": 8.2,
+    "require_complete_sentence": true,
+    "manifest_path": "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/audio/muge-golden-prompt-v1.json"
+  },
+  "post_processing": {
+    "sentence_gain_limit_db": 3.0,
+    "gain_rider_attack_ms": 250,
+    "gain_rider_release_ms": 600,
+    "single_master_compressor_max_ratio": 1.4,
+    "single_master_compressor_max_gain_reduction_db": 4.0,
+    "measured_two_pass_loudnorm": true,
+    "integrated_lufs": -16.0,
+    "true_peak_dbtp": -2.0,
+    "forbid_scene_then_master_dynamic_loudnorm": true,
+    "forbid_fixed_low_formant_notch_stack": true
+  },
+  "final_mix": {
+    "narration_offset_s": 1.0,
+    "max_local_metric_drift_db": 0.75
+  }
+}

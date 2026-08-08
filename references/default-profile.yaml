@@ -1,0 +1,227 @@
+version: 2
+voice:
+  engine: VoxCPM2
+  target_effective_chinese_chars_per_minute: 295
+  allowed_range: [290, 300]
+  fast_trial:
+    nominal_target_effective_chinese_chars_per_minute: 330
+    allowed_range: [320, 340]
+    target_is_nominal: true
+  generation_mode: continuous_episode_take
+  episode_as_single_acoustic_take: true
+  candidate_seeds: 3
+  maximum_candidate_seeds: 5
+  chunk_fallback_duration_range_s: [45, 60]
+  normalization_scope: master_once
+  global_retime_preferred_range: [0.97, 1.03]
+  global_retime_hard_range: [0.95, 1.05]
+  max_adjacent_chunk_retime_delta: 0.05
+  master_dynamics:
+    slow_gain_rider_limit_db: 3.0
+    gain_rider_attack_ms: 250
+    gain_rider_release_ms: 600
+    compressor_max_ratio: 1.4
+    compressor_max_gain_reduction_db: 4.0
+    loudnorm: "measured two-pass I=-16 TP=-2"
+    forbid_scene_then_master_dynamic_loudnorm: true
+    forbid_fixed_low_formant_notch_stack: true
+  boundary_stability:
+    required: true
+    default_gap_s: 0.18
+    allowed_gap_range_s: [0.12, 0.20]
+    edge_fade_s: 0.012
+    max_adjacent_scene_lufs_delta: 1.5
+    max_boundary_rms_delta_db: 2.0
+    max_onset_rms_delta_db: 5.0
+    master_true_peak_ceiling_dbtp: -1.8
+    stabilizer: scripts/stabilize_audio_boundaries.py
+    validator: scripts/validate_audio_boundaries.py
+    report: audio/boundary-qc.json
+    hard_gate_before_captions_and_render: true
+  voice_stability:
+    required: true
+    profile: references/voice-stability-profile.json
+    validator: scripts/validate_voice_stability.py
+    report: audio/voice-stability-qc.json
+    reject_stale_hashes: true
+    validate_master_and_final: true
+  final_mix:
+    validate_after_render: true
+    dual_mono_compensation_gain: 0.70710678
+    integrated_lufs_range: [-17.5, -14.5]
+    true_peak_ceiling_dbtp: -1.8
+    validator: scripts/validate_video_output.py
+  prosody: locked-acoustic-baseline-with-semantic-micro-prosody
+  prosody_required: true
+  prosody_status_before_tts: approved
+  acoustic_baseline:
+    register: stable-mid
+    vocal_effort: stable-conversational
+    breath_pressure: stable
+    microphone_distance: fixed
+    timbre_brightness: fixed
+    global_energy: fixed
+    allow_sentence_state_switching: false
+  max_emotion_strength: 2
+  rate_range: [0.98, 1.02]
+  pitch_policy: semantic-micro-only
+  alternatives: []
+  audio_master: narration_master.wav
+  sample_rate: 48000
+  channels: 1
+  voice_reference_source: "/Users/jaycehuang/Library/CloudStorage/SynologyDrive-Obsidian/66_自媒体/木哥原始音频/木哥音频.mp3"
+  cloning_mode: voxcpm2-ultimate-cloning
+  voice_prompt_wav: "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/audio/muge-golden-prompt-v1.wav"
+  voice_reference_wav: "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/audio/muge-golden-prompt-v1.wav"
+  voice_prompt_text: "大家在去做GEO的时候，为了让所有的AI平台都去推荐你，一定是全平台的分发而不是只能铺一个渠道。"
+  voice_reference_extract:
+    start_s: 310.95
+    duration_s: 8.2
+    codec: pcm_s16le
+    sample_rate: 48000
+    channels: 1
+motion:
+  system_version: 1
+  default_profile: premium-balanced
+  selectable_profiles: [clean, premium-balanced, cinematic]
+  cinematic_requires_explicit_user_request: true
+  catalog: references/motion-catalog.json
+  guide: references/motion-system.md
+  planner: scripts/plan_semantic_motion.py
+  validator: scripts/validate_semantic_motion.py
+  plan: .hyperframes/semantic-motion.json
+  report: .hyperframes/motion-qc.json
+  layout_manifest: .hyperframes/layout-boxes.json
+  layout_initializer: scripts/init_layout_boxes.py
+  layout_validator: scripts/validate_layout_boxes.py
+  layout_report: .hyperframes/layout-qc.json
+  require_approved_before_storyboard: true
+  clock:
+    source: narration_master.wav
+    prefer_caption_word_anchor: true
+    fallback_anchor: approved-prosody-proportional
+    render_fps: 30
+    sample_rate: 48000
+  hierarchy:
+    hero_motion_per_scene: 1
+    supporting_motion_range: [2, 3]
+    max_major_camera_moves_per_scene: 1
+    no_effect_stacking_without_semantic_reason: true
+  density:
+    event_interval_s: [1.6, 3.2]
+    max_simultaneous_animated_elements: 4
+    max_primary_concurrent: 1
+    max_support_concurrent: 2
+    max_rolling_motion_points_10s: 3.25
+    max_kinetic_duty_cycle: 0.38
+    min_primary_gap_s: 1.2
+    long_hold_review_threshold_s: 4.0
+  transitions:
+    primary: push-slide
+    accent: zoom-through
+    soft: blur-crossfade
+    max_families_per_video: 3
+    primary_usage_ratio: [0.60, 0.70]
+    paper_flip_only_when_paper_or_chapter_metaphor: true
+    max_shader_transitions: 0
+  image_treatment:
+    use_isolated_media_box: true
+    wrapper_handles_entrance: true
+    child_handles_parallax: true
+    slow_push_scale_range: [1.00, 1.06]
+    max_primary_treatments_per_image: 1
+  determinism:
+    seek_safe: true
+    allow_runtime_random: false
+    allow_wall_clock: false
+    allow_infinite_loop: false
+    hard_kill_scene_boundaries: true
+  performance:
+    tier: balanced
+    max_particles_per_scene: 12
+    prefer_transform_opacity_svg_clip: true
+    avoid_persistent_blur: true
+    fallback_order: [full, remove-filter, flatten-3d, reduce-decoratives, css-transition, fade-slide, static-step]
+layout:
+  opening_title_content_only: true
+  opening_title_card:
+    enabled: true
+    position: center
+    reveal_s: 0.2
+    hold_s: 0.6
+    fade_s: 0.2
+    narration_starts_after_fade: true
+    captions_start_after_fade: true
+    scene_content_starts_after_fade: true
+    first_frame_sfx:
+      enabled: true
+      resolve_with: media-use
+      start_s: 0
+      max_duration_s: 0.6
+      volume_range: [0.20, 0.35]
+      must_end_before_narration: true
+  follow_cta_animation:
+    enabled: true
+    intro_inside_title_card: true
+    outro_sync_to_spoken_cta: true
+    motion: follow-card-arrow-single-ripple
+    loop: false
+    protect_avatar_caption_and_illustration_zones: true
+  transition:
+    router: semantic-motion-plan
+    primary: push-slide
+    accent: zoom-through
+    soft: blur-crossfade
+    optional_editorial: paper-flip-soft
+    max_duration_s: 0.50
+    visual_preroll_s: 0.12
+    captions_above_transition: true
+    forbid_white_flash: true
+  occlusion:
+    enabled: true
+    policy: no-unplanned-overlap
+    illustration_zone_isolated: true
+    protect_character_face_hands_action: true
+    protect_title_and_caption: true
+    allow_image_composite_only_when_declared: true
+    require_bbox_preflight: true
+    require_scene_snapshot_qa: true
+  illustration_skill:
+    name: ian-xiaomu-illustrations
+    path: "/Users/jaycehuang/.codex/skills/ian-xiaomu-illustrations/SKILL.md"
+    enabled: true
+    required: true
+    invocation_scope: every_episode
+    invocation_stage: after_script_before_storyboard
+    shot_count_range: [4, 8]
+    asset_count_range: [4, 8]
+    allow_episode_skip: false
+    allow_scene_level_diagram_preferred: true
+    require_skip_reason_for_scene_only: true
+    asset_dir: "assets/<article-slug>-illustrations"
+    reuse_existing_local_assets: true
+  bottom_text:
+    captions_only: true
+    show_explanatory_footer: false
+    show_engine_or_timeline_labels: false
+    show_scene_code_watermark: false
+  avatar_safe_zone:
+    x: 42
+    bottom: 28
+    size: 300
+    shape: circle
+    reserve_mode: circle-only
+    show_guide_in_final: false
+  use_upper_left_and_left_middle: true
+images:
+  reuse_existing_local_assets: true
+  regenerate_only_when_explicitly_requested: true
+  cover_force_flag: --force-cover
+  visual_asset_manifest: visual-assets.json
+  visual_asset_validator: scripts/validate_visual_assets.py
+episode:
+  standalone_topic_and_chapter: true
+  allow_cross_episode_reference: false
+  allow_cross_episode_teaser: false
+  final_cta: "关注我，给你带来更多AI知识。"
+  independence_validator: scripts/validate_episode_independence.py

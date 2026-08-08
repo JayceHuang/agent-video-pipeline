@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment and credentials
+.env
+.env.*
+*.pem
+*.key
+
+# Models, media, caches and generated output
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+renders/
+snapshots/
+cache/
+.cache/
+
+# macOS and editors
+.DS_Store
+.idea/
+.vscode/

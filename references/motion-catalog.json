@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "default_profile": "premium-balanced",
+  "profiles": {
+    "clean": {
+      "description": "低风险、低装饰的清晰教程模式。",
+      "max_primitive_tier": "low",
+      "support_motion_range": [1, 2],
+      "event_interval_s": [2.5, 4.5],
+      "max_events_per_scene": 4,
+      "max_simultaneous_animated_elements": 3,
+      "max_primary_concurrent": 1,
+      "max_support_concurrent": 1,
+      "max_major_camera_moves_per_scene": 1,
+      "max_particles_per_scene": 0,
+      "max_rolling_motion_points_10s": 3.0,
+      "max_kinetic_duty_cycle": 0.3,
+      "max_continuous_motion_s": 1.5,
+      "min_primary_gap_s": 1.4,
+      "max_transition_families": 2,
+      "max_shader_transitions": 0,
+      "transition_grammar": ["crossfade", "push-slide"]
+    },
+    "premium-balanced": {
+      "description": "默认批量生产模式：高级但克制，语义主导，兼顾稳定渲染。",
+      "max_primitive_tier": "medium",
+      "support_motion_range": [2, 3],
+      "event_interval_s": [1.6, 3.2],
+      "max_events_per_scene": 7,
+      "max_simultaneous_animated_elements": 4,
+      "max_primary_concurrent": 1,
+      "max_support_concurrent": 2,
+      "max_major_camera_moves_per_scene": 1,
+      "max_particles_per_scene": 12,
+      "max_rolling_motion_points_10s": 3.25,
+      "max_kinetic_duty_cycle": 0.38,
+      "max_continuous_motion_s": 2.4,
+      "min_primary_gap_s": 1.2,
+      "max_transition_families": 3,
+      "max_shader_transitions": 0,
+      "transition_grammar": ["push-slide", "zoom-through", "blur-crossfade"]
+    },
+    "cinematic": {
+      "description": "只在用户明确要求高动态样片时使用；允许少量 GPU/高成本英雄镜头。",
+      "max_primitive_tier": "high",
+      "support_motion_range": [2, 4],
+      "event_interval_s": [1.4, 2.8],
+      "max_events_per_scene": 8,
+      "max_simultaneous_animated_elements": 5,
+      "max_primary_concurrent": 1,
+      "max_support_concurrent": 2,
+      "max_major_camera_moves_per_scene": 1,
+      "max_particles_per_scene": 24,
+      "max_rolling_motion_points_10s": 4.0,
+      "max_kinetic_duty_cycle": 0.45,
+      "max_continuous_motion_s": 2.8,
+      "min_primary_gap_s": 1.0,
+      "max_transition_families": 3,
+      "max_shader_transitions": 2,
+      "transition_grammar": ["cinematic-zoom", "domain-warp", "blur-crossfade"]
+    }
+  },
+  "motion_costs": {
+    "micro": 0.25,
+    "support": 0.5,
+    "primary": 1.0,
+    "high-salience": 1.5,
+    "transition": 0.75
+  },
+  "primitives": {
+    "accent-rule-draw": {"tier": "low", "cost": "micro", "fallback": "fade-slide"},
+    "active-step-highlight": {"tier": "low", "cost": "support", "fallback": "fade-slide"},
+    "ambient-glow-bloom": {"tier": "low", "cost": "micro", "fallback": "static-accent"},
+    "camera-punch-type": {"tier": "medium", "cost": "primary", "fallback": "kinetic-focus-lock"},
+    "camera-track-nodes": {"tier": "medium", "cost": "support", "fallback": "active-step-highlight"},
+    "claim-land": {"tier": "low", "cost": "support", "fallback": "fade-slide"},
+    "command-type-on": {"tier": "medium", "cost": "support", "fallback": "fade-slide"},
+    "converge-to-claim": {"tier": "medium", "cost": "primary", "fallback": "claim-land"},
+    "cursor-ui-demo": {"tier": "medium", "cost": "primary", "fallback": "device-window-reveal"},
+    "depth-scatter-assemble": {"tier": "high", "cost": "high-salience", "fallback": "stagger-card-assemble"},
+    "device-window-reveal": {"tier": "low", "cost": "primary", "fallback": "fade-slide"},
+    "difference-marker": {"tier": "low", "cost": "support", "fallback": "accent-rule-draw"},
+    "fade-slide": {"tier": "low", "cost": "micro", "fallback": "static-step"},
+    "follow-card-arrow-single-ripple": {"tier": "low", "cost": "primary", "fallback": "fade-slide"},
+    "focus-marker-draw": {"tier": "low", "cost": "support", "fallback": "accent-rule-draw"},
+    "impact-pulse-once": {"tier": "low", "cost": "micro", "fallback": "static-accent"},
+    "kinetic-focus-lock": {"tier": "low", "cost": "primary", "fallback": "fade-slide"},
+    "keyword-cascade": {"tier": "medium", "cost": "support", "fallback": "focus-marker-draw"},
+    "keyword-glow-once": {"tier": "low", "cost": "micro", "fallback": "static-accent"},
+    "media-mask-reveal": {"tier": "medium", "cost": "support", "fallback": "media-parallax-reveal"},
+    "media-parallax-reveal": {"tier": "low", "cost": "support", "fallback": "fade-slide"},
+    "node-activation": {"tier": "low", "cost": "support", "fallback": "active-step-highlight"},
+    "numeric-arrow-transform": {"tier": "medium", "cost": "support", "fallback": "stat-bars-and-fills"},
+    "ordered-path-draw": {"tier": "medium", "cost": "primary", "fallback": "active-step-highlight"},
+    "paired-label-lock": {"tier": "low", "cost": "micro", "fallback": "static-accent"},
+    "scanline-title-build": {"tier": "medium", "cost": "primary", "fallback": "kinetic-focus-lock"},
+    "semantic-card-reveal": {"tier": "low", "cost": "primary", "fallback": "fade-slide"},
+    "single-attention-pulse": {"tier": "low", "cost": "support", "fallback": "static-accent"},
+    "soft-focus-pull": {"tier": "medium", "cost": "support", "fallback": "fade-slide"},
+    "split-tilt-cards": {"tier": "medium", "cost": "primary", "fallback": "semantic-card-reveal"},
+    "stagger-card-assemble": {"tier": "low", "cost": "primary", "fallback": "semantic-card-reveal"},
+    "stat-bars-and-fills": {"tier": "low", "cost": "support", "fallback": "fade-slide"},
+    "static-accent": {"tier": "low", "cost": "micro", "fallback": "static-step"},
+    "static-step": {"tier": "low", "cost": "micro", "fallback": null},
+    "summary-node-convergence": {"tier": "medium", "cost": "support", "fallback": "claim-land"},
+    "term-pin-definition-reveal": {"tier": "low", "cost": "primary", "fallback": "semantic-card-reveal"},
+    "warning-frame-tighten": {"tier": "medium", "cost": "primary", "fallback": "semantic-card-reveal"}
+  },
+  "semantic_recipes": {
+    "hook": {
+      "layout": "asymmetric-hero",
+      "blueprint": "kinetic-type-beats",
+      "hero": ["camera-punch-type", "scanline-title-build", "kinetic-focus-lock"],
+      "support": ["keyword-cascade", "accent-rule-draw", "ambient-glow-bloom"]
+    },
+    "definition": {
+      "layout": "term-left-media-right",
+      "blueprint": "definition-lockup",
+      "hero": ["term-pin-definition-reveal", "semantic-card-reveal"],
+      "support": ["media-mask-reveal", "focus-marker-draw", "keyword-glow-once"]
+    },
+    "process": {
+      "layout": "path-center-steps-sides",
+      "blueprint": "spatial-pan-stations",
+      "hero": ["ordered-path-draw", "stagger-card-assemble"],
+      "support": ["node-activation", "active-step-highlight", "camera-track-nodes"]
+    },
+    "comparison": {
+      "layout": "protected-split-frame",
+      "blueprint": "comparison-split",
+      "hero": ["split-tilt-cards", "semantic-card-reveal"],
+      "support": ["difference-marker", "paired-label-lock", "accent-rule-draw"]
+    },
+    "metric": {
+      "layout": "metric-hero-with-proof",
+      "blueprint": "dataviz-countup",
+      "hero": ["numeric-arrow-transform", "semantic-card-reveal"],
+      "support": ["stat-bars-and-fills", "impact-pulse-once", "accent-rule-draw"]
+    },
+    "warning": {
+      "layout": "warning-rail-with-evidence",
+      "blueprint": "warning-frame",
+      "hero": ["warning-frame-tighten", "semantic-card-reveal"],
+      "support": ["single-attention-pulse", "difference-marker", "focus-marker-draw"]
+    },
+    "demo": {
+      "layout": "device-window-with-callouts",
+      "blueprint": "cursor-ui-demo",
+      "hero": ["cursor-ui-demo", "device-window-reveal"],
+      "support": ["command-type-on", "focus-marker-draw", "media-parallax-reveal"]
+    },
+    "hierarchy": {
+      "layout": "hub-and-levels",
+      "blueprint": "constellation-hub",
+      "hero": ["ordered-path-draw", "stagger-card-assemble"],
+      "support": ["node-activation", "paired-label-lock", "accent-rule-draw"]
+    },
+    "example": {
+      "layout": "staggered-evidence-cards",
+      "blueprint": "grid-card-assemble",
+      "hero": ["stagger-card-assemble", "semantic-card-reveal"],
+      "support": ["media-parallax-reveal", "focus-marker-draw", "keyword-glow-once"]
+    },
+    "conclusion": {
+      "layout": "convergence-to-claim",
+      "blueprint": "titlecard-reveal",
+      "hero": ["converge-to-claim", "semantic-card-reveal"],
+      "support": ["summary-node-convergence", "claim-land", "soft-focus-pull"]
+    },
+    "cta": {
+      "layout": "cta-right-avatar-clear",
+      "blueprint": "cta-morph-press",
+      "hero": ["follow-card-arrow-single-ripple"],
+      "support": ["accent-rule-draw", "keyword-glow-once"]
+    },
+    "statement": {
+      "layout": "editorial-text-with-media",
+      "blueprint": "titlecard-reveal",
+      "hero": ["semantic-card-reveal", "term-pin-definition-reveal"],
+      "support": ["media-parallax-reveal", "focus-marker-draw", "accent-rule-draw"]
+    }
+  },
+  "transitions": {
+    "cut": {"tier": "low", "shader": false, "cost": "micro", "fallback": null},
+    "crossfade": {"tier": "low", "shader": false, "cost": "transition", "fallback": "cut"},
+    "push-slide": {"tier": "low", "shader": false, "cost": "transition", "fallback": "crossfade"},
+    "zoom-through": {"tier": "medium", "shader": false, "cost": "transition", "fallback": "push-slide"},
+    "blur-crossfade": {"tier": "medium", "shader": false, "cost": "transition", "fallback": "crossfade"},
+    "paper-flip-soft": {"tier": "medium", "shader": false, "cost": "transition", "fallback": "push-slide"},
+    "cinematic-zoom": {"tier": "high", "shader": true, "cost": "high-salience", "fallback": "zoom-through"},
+    "domain-warp": {"tier": "high", "shader": true, "cost": "high-salience", "fallback": "blur-crossfade"}
+  }
+}
