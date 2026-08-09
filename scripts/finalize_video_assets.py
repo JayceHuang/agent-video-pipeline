@@ -232,6 +232,31 @@ def load_motion_assets(output_dir: Path) -> dict[str, Any] | None:
     }
 
 
+def load_pipeline_timings(output_dir: Path) -> dict[str, Any] | None:
+    """Copy the append-only timing trace beside the final deliverables."""
+    source = output_dir.parent / "pipeline-timings.json"
+    if not source.is_file():
+        return None
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
+        return None
+    target = output_dir / "pipeline-timings.json"
+    atomic_copy(source, target)
+    return {
+        "path": target.name,
+        "sha256": sha256(target),
+        "wall_clock_elapsed_s": payload.get("wall_clock_elapsed_s"),
+        "event_count": len(payload["events"]),
+        "cache_hits": sum(
+            1 for event in payload["events"]
+            if isinstance(event, dict) and event.get("cache_hit") is True
+        ),
+    }
+
+
 def load_intro_card(output_dir: Path) -> dict[str, Any] | None:
     """Read the generated opening-card timing from the assembled composition."""
     index_path = output_dir.parent / "index.html"
@@ -320,6 +345,8 @@ def load_audio_pipeline_assets(output_dir: Path) -> dict[str, Any] | None:
                     "path": "audio/voice-manifest.json",
                     "generation_mode": voice_manifest.get("generation_mode"),
                     "clone_mode": voice_manifest.get("clone_mode"),
+                    "candidate_strategy": voice_manifest.get("candidate_strategy"),
+                    "candidate_limit": voice_manifest.get("candidate_limit"),
                     "candidate_count": voice_manifest.get("candidate_count"),
                     "selected_seed": voice_manifest.get("selected_seed"),
                     "global_retime_factor": voice_manifest.get("global_retime_factor"),
@@ -438,6 +465,7 @@ def main() -> int:
     motion_assets = load_motion_assets(output_dir)
     intro_card = load_intro_card(output_dir)
     audio_pipeline_assets = load_audio_pipeline_assets(output_dir)
+    pipeline_timings = load_pipeline_timings(output_dir)
 
     manifest = {
         "schema_version": 1,
@@ -461,6 +489,8 @@ def main() -> int:
         manifest["opening_title_card"] = intro_card
     if audio_pipeline_assets is not None:
         manifest["audio_pipeline"] = audio_pipeline_assets
+    if pipeline_timings is not None:
+        manifest["pipeline_timings"] = pipeline_timings
     atomic_json(output_dir / "asset-manifest.json", manifest)
     print(json.dumps({"output_dir": str(output_dir), "cover": cover_png.name, "reused_existing": cover_reused, "description": "cover-description.md", "copy": "publishing-copy.md"}, ensure_ascii=False))
     return 0

@@ -20,8 +20,23 @@
   },
   "generation": {
     "episode_as_single_acoustic_take": true,
+    "candidate_strategy": "adaptive_sequential",
+    "minimum_candidate_seeds": 1,
     "candidate_seeds": 3,
     "maximum_candidate_seeds": 5,
+    "adaptive_early_stop": {
+      "enabled": true,
+      "require_acoustic_gate": "pass",
+      "require_alignment_gate": "pass",
+      "global_retime_range": [0.97, 1.03],
+      "metric_limits": {
+        "active_1s_p90_p10_db": 3.0,
+        "baseline_f0_max_step_semitones": 4.0,
+        "baseline_f0_p95_step_semitones": 2.5,
+        "baseline_centroid_max_step_semitones": 4.0,
+        "baseline_centroid_p95_step_semitones": 3.0
+      }
+    },
     "preferred_global_retime_range": [0.97, 1.03],
     "hard_global_retime_range": [0.95, 1.05],
     "chunk_fallback_max_duration_s": 60,

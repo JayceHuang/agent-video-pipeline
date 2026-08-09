@@ -28,21 +28,32 @@
 6. 所有动作必须 deterministic、seek-safe、可直接定位到任意帧。禁止 `Math.random()`、`Date.now()`、墙钟、无限循环和累积 delta。
 7. 高级感来自一致的运动语言、精确的落点和克制的层级，不来自同时堆叠 3D、模糊、发光、粒子和镜头摇移。
 
-## 三档 Motion Profile
+## 四档 Motion Profile
+
+### `basic-stable`（默认）
+
+用于所有批量正式成片。只允许标题/卡片淡入位移、下划线或连线生长、节点出现、单次 CTA 波纹和 `crossfade`/`push-slide`。每场一个主动作、一个辅助动作；不使用镜头移动、3D、景深、扫描光、常驻视差、粒子、shader 或复杂 kinetic type。未选中的高级 DOM、装饰层和转场节点不进入默认构建产物；高级源码只保留给显式高级档。人物可在不同场景改变左右或上角位置，但每场入场完成后保持稳定。
 
 ### `clean`
 
 用于信息密集、设备性能有限或快速批量预览。每场一个主动作和一到两个辅助动作；只用 transform、opacity、SVG path、静态遮罩和简单转场。
 
-### `premium-balanced`（默认）
+### `premium-balanced`
 
-用于正式教程成片。每场一个主动作和两到三个辅助动作；允许 2.5D 图片、一次主镜头、遮罩揭示、数字变化、SVG 路径和最多三种重复转场。默认不使用 shader。
+只在用户明确要求更丰富动效、且目标渲染器已经完成 implementation audit 时使用。每场一个主动作和两到三个辅助动作；允许 2.5D 图片、一次主镜头、遮罩揭示、数字变化和 SVG 路径。不能把“计划中存在 primitive”当成“成片已实现”。
 
 ### `cinematic`
 
 只在用户明确要求高动态样片或电影级片段时使用。允许一到两个 hero shader transition 或高成本镜头，但仍服从语义 cue、字幕、圆形头像区、布局和降级门禁。不得把该档作为大量视频的默认值。
 
 具体预算以 `motion-catalog.json` 为准。项目必须把本次 profile、seed 和输入哈希写进 `.hyperframes/semantic-motion.json`，不能根据目录名或临时代码开关高级动效。
+
+## 动态布局规则
+
+- 布局由语义角色、可用插图和固定 seed 共同选择，结果写入 motion plan；不按 scene index 机械轮换，也不在浏览器运行时随机。
+- 每集至少使用 3 种 layout variant，相邻场景不得重复；默认禁止人物居中后再左右展开的单一模板。
+- 可选构图包括左人物右内容、右人物左内容、上角人物大画布、全宽流程、偏置编辑式、证据分栏、顶部流程条和卡片场。每个 layout 必须使用预计算 safe boxes。
+- Storyboard 必须把 `layout_variant` 和 `presenter_anchor` 写入 DOM 与 alignment binding；实现和计划不一致时停止渲染。
 
 ## 语义到动画的映射
 
@@ -64,10 +75,10 @@
 
 ## 动画层级与节奏
 
-每场必须声明：
+`basic-stable` 每场必须声明：
 
 - `hero_motion`：恰好一个，表达该场的主要关系。
-- `supporting_motions`：按 profile 选择一到四个，不能与 hero 抢同一焦点。
+- `supporting_motions`：只允许一个，不能与 hero 抢同一焦点。
 - `semantic_beats`：每个 beat 绑定 sentence/word/focus anchor，不得只写抽象秒数。
 - `intentional_holds`：超过 4 秒没有新 cue 时，登记具体理由和语义 owner。
 
@@ -76,17 +87,17 @@
 - 微动作入场约 0.18–0.45 秒。
 - 主卡片、术语和图片入场约 0.35–0.65 秒。
 - SVG 路径、流程生长、图片慢推约 0.8–2.4 秒。
-- 同场最多一个 major camera move。
+- `basic-stable` 不允许 major camera move；其他显式高级档同场最多一个。
 - 两个 primary cue 间隔小于 profile 的 `min_primary_gap_s` 时，先合并成组合动作；仍过密则删除 support，最后才降为 fade-only。
 - 不得用“每 N 秒必须动一次”替代语义判断。`event_interval_s` 只是规划提示，最终以句子、重点词和理解时间为准。
 
 ## 转场语法
 
-一个视频最多使用三种转场 family。不要每场换一种，也不要把纸张翻页固定到全部场景。
+默认视频最多使用两种转场 family：`push-slide` 与 `crossfade`。不要每场换一种，也不要把纸张翻页固定到全部场景。
 
 - 60–70% 的相邻论点：`push-slide`，表达继续向前。
-- 标题进入正文、重大概念转向或英雄揭示：`zoom-through`，全片通常一到两次。
-- 峰值后的结论、边界澄清或收束：`blur-crossfade` 或普通 `crossfade`。
+- 标题进入正文、结论和边界澄清：普通 `crossfade`。
+- `zoom-through`、`blur-crossfade` 和 `paper-flip-soft` 只属于显式高级档，默认不用。
 - `paper-flip-soft` 只在纸张、笔记、章节或编辑语义成立时作为可选 accent。
 - `cinematic` 档可把一到两个重点转场升级为 `cinematic-zoom` 或 `domain-warp`；失败必须降到对应 CSS fallback。
 
@@ -144,15 +155,13 @@
 
 ## 性能预算与降级
 
-`premium-balanced` 的批量优先级：
+`basic-stable` 的批量优先级：
 
 1. 保留语义 cue、文字、数字、路径和安全布局。
 2. 优先移除全屏 blur、常驻 filter 和多层 shadow。
-3. 将 3D depth 降为 2D transform。
-4. 减少粒子、装饰和非语义 micro motion。
-5. 将 shader transition 降为 CSS transition。
-6. 将复杂 hero motion 降为 catalog 中的 fallback primitive。
-7. 最后才降为 `fade-slide` 或 `static-step`。
+3. 禁止引入 3D、粒子、blur、filter、shader 或持续镜头动作。
+4. 同一语义点只保留一个基础 primitive。
+5. 计算或布局不稳定时直接降为 `fade-slide` 或 `static-step`。
 
 降级只能降低视觉复杂度，不能改变 cue 时间、重点词、数字含义、布局保护区或字幕。每次降级写进 `degradations` 和 `motion-qc.json`。
 

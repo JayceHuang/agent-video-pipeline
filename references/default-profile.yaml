@@ -1,4 +1,33 @@
 version: 2
+production_fast_path:
+  enabled: true
+  planner: scripts/plan_fast_production.py
+  required_before_expensive_stages: true
+  tts_initial_candidates: 1
+  tts_candidate_limit: 3
+  expand_candidates_only_after_gate_failure: true
+  reuse_raw_candidates_when_only_target_cpm_changes: true
+  aligned_stabilization_max_runs: 1
+  hyperframes_full_check_max_runs_before_render: 1
+  dependency_invalidation: downstream-only
+  unchanged_images_default: reuse
+  unchanged_cover_default: reuse
+  gates_runner: scripts/run_gates.py
+  auto_approve: scripts/approve_if_clean.py
+  auto_approve_min_confidence: 0.6
+  layout_extractor: scripts/extract_layout_boxes.js
+  snapshot_check_scene_level_cache: true
+  cache_key_uses_logic_version_not_file_sha: true
+  estimate_calibration_source: pipeline-timings.json
+  expected_new_two_minute_wall_clock_min: [15, 25]
+  expected_cached_two_minute_wall_clock_min: [5, 10]
+tts_runtime:
+  # generate/align 脚本的默认运行时；CLI --model / --aligner-python 可覆盖
+  model_path: "/Users/jaycehuang/.cache/voxcpm2-local/models/VoxCPM2"
+  aligner_python: "/Users/jaycehuang/obsidian-proj/videos/obsidian-beginner-horizontal-synced/.venv-audio/bin/python"
+  generator: scripts/generate_all_voxcpm2.py
+  continuous_engine: scripts/generate_voxcpm2_continuous.py
+  aligner: scripts/align_all_captions.py
 voice:
   engine: VoxCPM2
   target_effective_chinese_chars_per_minute: 295
@@ -9,8 +38,12 @@ voice:
     target_is_nominal: true
   generation_mode: continuous_episode_take
   episode_as_single_acoustic_take: true
-  candidate_seeds: 3
+  candidate_seeds: 1
   maximum_candidate_seeds: 5
+  candidate_strategy: adaptive_sequential
+  minimum_candidate_seeds: 1
+  candidate_count_is_maximum: true
+  adaptive_early_stop_profile: references/voice-stability-profile.json
   chunk_fallback_duration_range_s: [45, 60]
   normalization_scope: master_once
   global_retime_preferred_range: [0.97, 1.03]
@@ -82,8 +115,9 @@ voice:
     channels: 1
 motion:
   system_version: 1
-  default_profile: premium-balanced
-  selectable_profiles: [clean, premium-balanced, cinematic]
+  default_profile: basic-stable
+  selectable_profiles: [basic-stable, clean, premium-balanced, cinematic]
+  advanced_profiles_require_runtime_implementation_audit: true
   cinematic_requires_explicit_user_request: true
   catalog: references/motion-catalog.json
   guide: references/motion-system.md
@@ -104,31 +138,31 @@ motion:
     sample_rate: 48000
   hierarchy:
     hero_motion_per_scene: 1
-    supporting_motion_range: [2, 3]
-    max_major_camera_moves_per_scene: 1
+    supporting_motion_range: [1, 1]
+    max_major_camera_moves_per_scene: 0
     no_effect_stacking_without_semantic_reason: true
   density:
-    event_interval_s: [1.6, 3.2]
-    max_simultaneous_animated_elements: 4
+    event_interval_s: [3.0, 5.5]
+    max_simultaneous_animated_elements: 3
     max_primary_concurrent: 1
-    max_support_concurrent: 2
-    max_rolling_motion_points_10s: 3.25
-    max_kinetic_duty_cycle: 0.38
-    min_primary_gap_s: 1.2
+    max_support_concurrent: 1
+    max_rolling_motion_points_10s: 2.5
+    max_kinetic_duty_cycle: 0.25
+    min_primary_gap_s: 1.5
     long_hold_review_threshold_s: 4.0
   transitions:
     primary: push-slide
-    accent: zoom-through
-    soft: blur-crossfade
-    max_families_per_video: 3
-    primary_usage_ratio: [0.60, 0.70]
-    paper_flip_only_when_paper_or_chapter_metaphor: true
+    accent: crossfade
+    soft: crossfade
+    max_families_per_video: 2
+    primary_usage_ratio: [0.60, 0.85]
+    paper_flip_only_when_paper_or_chapter_metaphor: false
     max_shader_transitions: 0
   image_treatment:
     use_isolated_media_box: true
     wrapper_handles_entrance: true
-    child_handles_parallax: true
-    slow_push_scale_range: [1.00, 1.06]
+    child_handles_parallax: false
+    slow_push_scale_range: [1.00, 1.00]
     max_primary_treatments_per_image: 1
   determinism:
     seek_safe: true
@@ -138,10 +172,30 @@ motion:
     hard_kill_scene_boundaries: true
   performance:
     tier: balanced
-    max_particles_per_scene: 12
+    max_particles_per_scene: 0
+    render_concurrency: 2
+    tts_model_concurrency: 1
+    final_assembly_optimization_priority: low
     prefer_transform_opacity_svg_clip: true
     avoid_persistent_blur: true
     fallback_order: [full, remove-filter, flatten-3d, reduce-decoratives, css-transition, fade-slide, static-step]
+  layout_policy:
+    mode: semantic-deterministic-rotation
+    minimum_distinct_layouts_per_episode: 3
+    forbid_adjacent_repeat: true
+    forbid_centered_presenter_default: true
+    precompute_geometry: true
+    write_layout_to_dom_and_alignment_binding: true
+    basic_stable_prune_unselected_advanced_dom: true
+    variants:
+      - host-left-board-right
+      - host-right-board-left
+      - host-upper-corner-canvas
+      - diagram-full-width
+      - editorial-offset
+      - split-evidence
+      - top-strip-process
+      - card-field-corner-visual
 layout:
   opening_title_content_only: true
   opening_title_card:
@@ -170,9 +224,9 @@ layout:
   transition:
     router: semantic-motion-plan
     primary: push-slide
-    accent: zoom-through
-    soft: blur-crossfade
-    optional_editorial: paper-flip-soft
+    accent: crossfade
+    soft: crossfade
+    optional_editorial: null
     max_duration_s: 0.50
     visual_preroll_s: 0.12
     captions_above_transition: true

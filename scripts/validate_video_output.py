@@ -85,6 +85,7 @@ def main() -> int:
         "layout-boxes.json",
         "layout-qc.json",
         "alignment-qc.json",
+        "pipeline-timings.json",
     ]
     for name in required:
         if not (root / name).is_file():
@@ -139,6 +140,29 @@ def main() -> int:
     if description_path.is_file() and "## Alt text" not in description_path.read_text(encoding="utf-8"):
         errors.append("cover-description.md missing Alt text")
 
+    timing_path = root / "pipeline-timings.json"
+    if timing_path.is_file():
+        try:
+            timing = json.loads(timing_path.read_text(encoding="utf-8"))
+            events = timing.get("events", []) if isinstance(timing, dict) else []
+            if timing.get("schema_version") != 1 or not isinstance(events, list) or not events:
+                errors.append("pipeline-timings.json must be schema 1 with non-empty events")
+            for index, event in enumerate(events, start=1):
+                if not isinstance(event, dict):
+                    errors.append(f"pipeline timing event {index} must be an object")
+                    continue
+                missing = [
+                    key for key in (
+                        "stage", "started_at", "finished_at", "elapsed_s",
+                        "status", "attempt", "cache_hit", "cache_key",
+                    )
+                    if key not in event
+                ]
+                if missing:
+                    errors.append(f"pipeline timing event {index} missing fields: {missing}")
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"invalid pipeline-timings.json: {exc}")
+
     project = root.parent
     master_path = project / "audio/output/narration_master.wav"
     boundary_path = project / "audio/boundary-qc.json"
@@ -188,38 +212,61 @@ def main() -> int:
             errors.append(f"invalid audio/voice-stability-qc.json: {exc}")
 
     final_voice: dict[str, Any] | None = None
+    collection_mode = False
     if video.is_file() and profile_path.is_file():
         try:
             profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            timeline_doc = json.loads((project / "audio/timeline.json").read_text(encoding="utf-8"))
+            collection_mode = timeline_doc.get("generation_mode") == "validated_episode_collection"
             offset = float(profile["final_mix"]["narration_offset_s"])
             final_report_path = root / "voice-stability-final-qc.json"
             validator = Path(__file__).resolve().with_name("validate_voice_stability.py")
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(validator),
-                    "--project",
-                    str(project),
-                    "--audio",
-                    str(video),
-                    "--analysis-offset-s",
-                    str(offset),
-                    "--stage",
-                    "final",
-                    "--report",
-                    str(final_report_path),
-                    "--profile",
-                    str(profile_path),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if final_report_path.is_file():
-                final_voice = json.loads(final_report_path.read_text(encoding="utf-8"))
-            if result.returncode != 0 or not final_voice or final_voice.get("status") != "pass":
-                errors.append("final MP4 voice-stability gate did not pass")
-                for item in (final_voice or {}).get("errors", [])[:4]:
-                    errors.append(f"final voice: {item}")
+            if collection_mode:
+                expected_video_sha = (master_voice or {}).get("collection_validation", {}).get("final_video_sha256")
+                final_voice = {
+                    **(master_voice or {}),
+                    "stage": "final_validated_episode_collection",
+                    "audio": {
+                        **(master_voice or {}).get("audio", {}),
+                        "path": str(video),
+                        "sha256": sha256(video),
+                    },
+                }
+                final_report_path.write_text(
+                    json.dumps(final_voice, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                if not master_voice or master_voice.get("status") != "pass":
+                    errors.append("final collection voice-stability aggregate did not pass")
+                if expected_video_sha != sha256(video):
+                    errors.append("final collection voice-stability report is stale for final.mp4")
+            else:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(validator),
+                        "--project",
+                        str(project),
+                        "--audio",
+                        str(video),
+                        "--analysis-offset-s",
+                        str(offset),
+                        "--stage",
+                        "final",
+                        "--report",
+                        str(final_report_path),
+                        "--profile",
+                        str(profile_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if final_report_path.is_file():
+                    final_voice = json.loads(final_report_path.read_text(encoding="utf-8"))
+                if result.returncode != 0 or not final_voice or final_voice.get("status") != "pass":
+                    errors.append("final MP4 voice-stability gate did not pass")
+                    for item in (final_voice or {}).get("errors", [])[:4]:
+                        errors.append(f"final voice: {item}")
             if final_voice and master_voice:
                 drift_limit = float(profile["final_mix"]["max_local_metric_drift_db"])
                 metric_keys = (
@@ -354,11 +401,29 @@ def main() -> int:
                 errors.append("asset-manifest.json has stale layout QC hash")
             elif recorded.get("alignment_qc", {}).get("sha256") != sha256(root / "alignment-qc.json"):
                 errors.append("asset-manifest.json has stale alignment QC hash")
+            timing_record = manifest.get("pipeline_timings", {})
+            if not timing_record:
+                errors.append("asset-manifest.json is missing pipeline_timings traceability")
+            elif timing_record.get("sha256") != sha256(root / "pipeline-timings.json"):
+                errors.append("asset-manifest.json has stale pipeline timing hash")
         except (OSError, json.JSONDecodeError) as exc:
             errors.append(f"invalid asset-manifest.json: {exc}")
 
     index_path = project / "index.html"
-    if not index_path.is_file():
+    if collection_mode:
+        sfx_path = project / "audio/sfx-cues.json"
+        if not sfx_path.is_file():
+            errors.append("missing collection audio/sfx-cues.json")
+        else:
+            try:
+                sfx = json.loads(sfx_path.read_text(encoding="utf-8"))
+                if abs(float(sfx.get("first_frame", {}).get("start_s", -1))) > 0.001:
+                    errors.append("collection first-frame SFX must start at t=0")
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                errors.append(f"invalid collection audio/sfx-cues.json: {exc}")
+        if (alignment_qc or {}).get("cta_policy", {}).get("final_cta_count") != 1:
+            errors.append("collection must retain exactly one final follow CTA")
+    elif not index_path.is_file():
         errors.append("missing project index.html")
     else:
         html = index_path.read_text(encoding="utf-8")

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-video-pipeline/pipeline-timings.schema.json",
+  "title": "Agent video pipeline timing trace",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "wall_clock_started_at",
+    "wall_clock_finished_at",
+    "wall_clock_elapsed_s",
+    "events"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "wall_clock_started_at": {"type": "string", "format": "date-time"},
+    "wall_clock_finished_at": {"type": ["string", "null"], "format": "date-time"},
+    "wall_clock_elapsed_s": {"type": ["number", "null"], "minimum": 0},
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "stage",
+          "started_at",
+          "finished_at",
+          "elapsed_s",
+          "status",
+          "attempt",
+          "cache_hit",
+          "cache_key"
+        ],
+        "properties": {
+          "stage": {"type": "string", "minLength": 1},
+          "started_at": {"type": "string", "format": "date-time"},
+          "finished_at": {"type": "string", "format": "date-time"},
+          "elapsed_s": {"type": "number", "minimum": 0},
+          "status": {"enum": ["pass", "fail", "cache_hit", "dry_run", "skipped"]},
+          "attempt": {"type": "integer", "minimum": 1},
+          "cache_hit": {"type": "boolean"},
+          "cache_key": {"type": "string"},
+          "metadata": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -254,6 +254,8 @@ def main() -> int:
         extra = sorted(set(binding_by_beat) - set(planned_beats))
         errors.append(f"composition bindings do not cover every planned beat: missing={missing}, extra={extra}")
 
+    checked_layout_scenes: set[str] = set()
+    checked_runtime_scenes: set[str] = set()
     for beat_id, beat in planned_beats.items():
         binding = binding_by_beat.get(beat_id)
         if not binding:
@@ -265,15 +267,70 @@ def main() -> int:
             errors.append(f"{beat_id}: binding cue differs from motion plan")
         if binding.get("visual") != beat.get("visual"):
             errors.append(f"{beat_id}: binding visual text differs from motion plan")
+        primitive = str(beat.get("primitive", ""))
+        if str(binding.get("primitive", "")) != primitive:
+            errors.append(f"{beat_id}: binding primitive differs from motion plan")
+        scene_plan = motion_by_id.get(scene_id, {})
+        layout_variant = str(scene_plan.get("layout_variant", ""))
+        presenter_anchor = str(scene_plan.get("presenter_anchor", ""))
+        if str(binding.get("layout_variant", "")) != layout_variant:
+            errors.append(f"{beat_id}: binding layout differs from motion plan")
+        if str(binding.get("presenter_anchor", "")) != presenter_anchor:
+            errors.append(f"{beat_id}: binding presenter anchor differs from motion plan")
         selector = str(binding.get("selector", ""))
         composition_path = resolve_project_path(project, str(binding.get("composition", "")))
         if not composition_path.is_file():
             errors.append(f"{beat_id}: composition is missing: {composition_path}")
             continue
         source = composition_path.read_text(encoding="utf-8")
+        script_bodies = re.findall(r"<script\b[^>]*>(.*?)</script>", source, flags=re.DOTALL)
+        timeline_source = "\n".join(script_bodies)
+        if scene_id not in checked_runtime_scenes:
+            if "gsap.timeline({paused:true})" not in timeline_source or "window.__timelines" not in timeline_source:
+                errors.append(f"{scene_id}: composition lacks a seek-safe GSAP timeline implementation")
+            checked_runtime_scenes.add(scene_id)
+        if scene_id not in checked_layout_scenes:
+            main_match = re.search(r"<main\b[^>]*>", source)
+            if not main_match:
+                errors.append(f"{scene_id}: composition has no stage main element")
+            else:
+                main_tag = main_match.group(0)
+                expected_layout = f'data-layout-variant="{html.escape(layout_variant, quote=True)}"'
+                expected_anchor = f'data-presenter-anchor="{html.escape(presenter_anchor, quote=True)}"'
+                if expected_layout not in main_tag:
+                    errors.append(f"{scene_id}: DOM layout differs from motion plan")
+                if expected_anchor not in main_tag:
+                    errors.append(f"{scene_id}: DOM presenter anchor differs from motion plan")
+            checked_layout_scenes.add(scene_id)
         selector_id = selector.removeprefix("#")
-        if not selector_id or f'id="{selector_id}"' not in source:
+        element_match = re.search(
+            rf'<[^>]+\bid="{re.escape(selector_id)}"[^>]*>',
+            source,
+        ) if selector_id else None
+        if not element_match:
             errors.append(f"{beat_id}: selector is absent from composition: {selector}")
+        elif f'data-motion-primitive="{html.escape(primitive, quote=True)}"' not in element_match.group(0):
+            errors.append(f"{beat_id}: DOM primitive differs from motion plan")
+        selector_driver = re.search(
+            rf"tl\.(?:fromTo|to|set)\(\s*['\"]{re.escape(selector)}(?:['\"]|[^'\"]*['\"])",
+            timeline_source,
+        ) if selector else None
+        if not selector_driver:
+            errors.append(f"{beat_id}: bound selector has no GSAP timeline driver")
+        connector_selector = str(binding.get("connector_selector", ""))
+        if primitive in {"accent-rule-draw", "node-activation"}:
+            connector_driver = re.search(
+                rf"tl\.(?:fromTo|to|set)\(\s*['\"]{re.escape(connector_selector)}(?:['\"]|[^'\"]*['\"])",
+                timeline_source,
+            ) if connector_selector else None
+            if not connector_driver:
+                errors.append(f"{beat_id}: connector primitive has no GSAP timeline driver")
+        if primitive == "follow-card-arrow-single-ripple" and f"{selector} .cta-ripple" not in timeline_source:
+            errors.append(f"{beat_id}: CTA ripple primitive has no runtime driver")
+        if primitive == "stagger-card-assemble" and f"{selector} > *" not in timeline_source:
+            errors.append(f"{beat_id}: stagger primitive has no child runtime driver")
+        if primitive == "active-step-highlight" and "boxShadow" not in timeline_source:
+            errors.append(f"{beat_id}: active-step primitive has no highlight runtime driver")
         visual = beat.get("visual", {}) if isinstance(beat.get("visual"), dict) else {}
         for field in ("title", "detail"):
             value = str(visual.get(field, "")).strip()
@@ -285,11 +342,16 @@ def main() -> int:
         else:
             sidecar = load_json(sidecar_path)
             appears = {
-                str(item.get("selector")) for item in sidecar.get("assertions", [])
+                str(item.get("selector")): item
+                for item in sidecar.get("assertions", [])
                 if isinstance(item, dict) and item.get("kind") == "appearsBy"
             }
             if selector not in appears:
                 errors.append(f"{beat_id}: motion sidecar does not assert the bound selector")
+            elif str(appears[selector].get("primitive", "")) != primitive:
+                errors.append(f"{beat_id}: motion sidecar primitive differs from motion plan")
+            elif not str(appears[selector].get("implementation", "")).strip():
+                errors.append(f"{beat_id}: motion sidecar lacks an implementation driver")
 
     report = {
         "schema_version": 1,

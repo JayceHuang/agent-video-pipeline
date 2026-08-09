@@ -24,24 +24,44 @@
 
 ```text
 script.json              # 章节、口播稿、有效字数、focus 词
-prosody.json             # 固定声学基线 + 句内 pause/stress/emotion/pitch
-narration_master.wav     # 唯一音频时间轴
+audio/prosody.json       # 固定声学基线 + 句内 pause/stress/emotion/pitch
+audio/output/narration_master.wav # 唯一音频时间轴（脚本默认路径，不放项目根目录）
 audio/timeline.json      # 场景 start/end/duration
 audio/caption-groups.json# 字幕短语时间轴
 audio/caption-words.json # 逐词/逐字 cue，优先作为动效锚点
+audio/boundary-qc.json   # 场景边界/开头/真峰值门禁报告
+audio/voice-stability-qc.json # 声音稳定门禁报告
 .hyperframes/semantic-motion.json # 已审核的逐场语义动效计划
 .hyperframes/motion-qc.json       # 动效同步、密度、布局计划和 seek-safe 门禁
 .hyperframes/layout-boxes.json    # 实际元素和完整运动路径的包围盒
 .hyperframes/layout-qc.json       # 圆区、字幕、插图和 protected element 遮挡门禁
+.hyperframes/alignment-qc.json    # 声音/字幕/beat/DOM/插图绑定门禁
 visual-assets.json       # ian-xiaomu-illustrations 调用/复用/跳过决定
+pipeline-timings.json    # 阶段/重试/缓存命中与 wall-clock/compute 耗时
+.pipeline/fast-production-plan.json # 高成本阶段前的时长、缓存与增量重建计划
 ```
+
+## 快速生产与增量重建
+
+- 在插图、VoxCPM2 和 HyperFrames render 前运行 `scripts/plan_fast_production.py`。它先按有效字数和目标 CPM 预测时长，避免目标速度确定之后又整段重生。
+- 新项目 TTS 默认只生成一个候选；该候选未通过 acoustic/alignment early-stop 才继续下一个，最多 3 个。`candidate-count=3` 是上限，不是固定批量。
+- 仅目标 CPM 改变时复用 raw candidate WAV，只重评分、全局 retime、master、alignment 和下游 QC；不重新调用模型。
+- 插图、音频、动效、布局、渲染分别按 SHA/QC 缓存。变更只向真实下游传播；例如只改发布文案不重渲染，只改布局不重生声音和插图。
+- 声音局部 gain 修正最多一次；`stabilize_aligned_continuous.py` 在单次运行中完成窗口 rider、caption 连续增益曲线、边界修正和静态真峰值保护。仍不通过时换候选，禁止多遍处理累积失真。
+- 完整 HyperFrames `check --snapshots` 放在 semantic/layout/alignment 机器门禁之后，正常生产只跑一次；失败后做定向修复，不循环盲测。截图检查按场景缓存：场景 DOM/plan 输入哈希未变时不重拍该场景快照。
+- raw TTS waveform 的 cache key 至少包含口播文本、prosody、黄金 prompt/reference、VoxCPM2 revision/config、seed 和声音 profile，但**不包含目标 CPM**；目标 CPM 只进入候选评分、全局 retime、master 与下游 cache key。动效/渲染 cache key 至少包含 master/timeline/captions、visual-assets、semantic-motion、layout、Storyboard 构建脚本和渲染器版本。
+- 脚本自身参与 cache key 时使用脚本内声明的 `LOGIC_VERSION` 常量，不用脚本文件 SHA；注释或格式化改动不得使缓存失效。
+- 虚拟环境 Python 路径必须保留 venv launcher；禁止 `Path.resolve()` 跟随 symlink 跳到 base interpreter，否则 `mlx_audio` 丢失会导致候选对齐误失败。
+- 门禁统一入口：`scripts/run_gates.py --project <dir> --stage <audio|motion|final|all>` 按正确顺序串行执行本阶段全部 validator，第一个失败即停止并输出汇总；不要逐个手敲命令。
+- 耗时事件用 `scripts/record_timing.py` 包装命令自动追加，禁止手写 `pipeline-timings.json` 事件；缓存命中用 `--status cache_hit` 登记。planner 的估算优先取该文件的历史中位数。
+- planner/初稿产物没有低置信度标记时，用 `scripts/approve_if_clean.py` 完成自动批准；只有 `classification_confidence < 0.6`、`needs_dom_review` 或显式 review 标记存在时才需要人工逐项复核。
 
 ## 语气层
 
 - TTS 前必须先生成 `prosody.json`，按句子/语义短语记录 `sentence_type`、`focus`、`pause_after_s`、`stress`、`emotion`、`emotion_strength`、`pitch`、`rate` 和 `style_instruction`。
 - `analyze_prosody.py` 只生成可复核的保守初稿；调用方必须结合上下文审核，确认顶层 `status=approved` 后才能生成声音。
 - 顶层 `acoustic_baseline` 锁定音区、发声力度、气息、距离、声线明暗和整体能量；句内允许受控的 question/contrast/conclusion/CTA 语调，`emotion_strength` 只允许 1–2、`rate` 只允许 0.98–1.02。
-- 不得把 `[emotion=...]` 等控制标签拼进最终朗读文本，也不得把每句标签转换成独立声学 prompt；VoxCPM2 只接收一条整集风格指令，语义标签用于审核、停顿和 QC。
+- 不得把 `[emotion=...]` 等控制标签拼进最终朗读文本，也不得把每句标签转换成独立声学 prompt。VoxCPM2 当前统一使用同一个黄金 prompt/reference、模型参数和完整口播文本；语义标签用于脚本审核、标点停顿、对齐和 QC，不伪装成模型原生语气字段。
 - 语气分析失败、字段缺失或未批准时，停止 TTS、字幕、动画和数字人流程，不用默认平调硬生成。
 
 ## 视频规格
@@ -50,6 +70,7 @@ visual-assets.json       # ian-xiaomu-illustrations 调用/复用/跳过决定
 - 每集默认不超过 3 分钟并作为一个连续 acoustic take；默认整集以 295 为目标。若用户要求约 330，则使用名义目标 330、整集允许区间 320–340。局部句子允许自然快慢，不再强迫每个视觉 scene 达到同一个整数 CPM。
 - 左下圆形头像安全区：x=42、bottom=28、size=300。只保留圆形本身，不能扩成整条左侧留白；左上和左中为可用画面区域。预览辅助圆弧不得进入最终视频、封面或发布图片。
 - 字幕底部居中，优先以逗号、分号和句号分组，问号/感叹号同样换组；中文 `；` 与英文 `;` 都必须换组，避免一个字幕包含多个分号。不能因字符数或时长阈值在标点之外硬切。
+- 字幕分组避免“第一，”“其次，”等一至三个字的短序数/承接词单独闪现，应与紧随其后的完整分句合并；成对结构（如“一半……，一半……”）和不宜拆散的连续动作链保持在同一字幕组，但仍以自然标点和可读长度为上限。
 - 每集开头固定使用居中的标题卡：总时长约 1 秒，内容标题在 0.2 秒内入场，完整保持 0.6 秒，再用 0.2 秒淡出；标题卡淡出后才启动 narration、caption 和正文场景。标题只显示本集内容标题，不显示“第几章”“第几集/总集数”、页码或系列计数；场景内的左上标题继续遵守同一规则，系列编号只保留在元数据。
 - 标题卡第一帧可绑定一个由 `media-use` 解析并冻结的短音效：t=0 精确触发、建议不超过 0.6 秒、静态音量约 0.20–0.35，禁止尾音侵入 1 秒后的第一句口播，也禁止叠加多个首帧冲击音。
 - 每个视频结尾固定追加 CTA：`关注我，给你带来更多AI知识。`，并同步进入口播音频、字幕和时间线；CTA 使用温和收束语气。
@@ -57,22 +78,28 @@ visual-assets.json       # ian-xiaomu-illustrations 调用/复用/跳过决定
 - 底部只保留正式字幕，不显示说明性 footer、小字脚注、制作备注、技术标签、模型/引擎名称或时间轴标记。调试信息必须放在项目元数据或 preview-only 图层，最终视频、封面和发布图片中一律隐藏。
 - 右下角不显示 `S01`、`S02` 等章节/场景编码或类似水印；这类标识只能保存在项目元数据。
 - 画面元素按照语义 cue 出现，不能前置铺满，也不能用无意义动画填充讲解空档。
+- 正文采用语义驱动的确定性动态布局：每集至少 3 种 layout variant，相邻场景不得重复，默认禁止人物居中后内容向左右展开。人物可在左、右或上角等非中心锚点变化，流程、证据和卡片场随语义选择；坐标与安全区必须预计算并写入 motion plan。
 - 视觉资产遮挡门禁：小木人物脸、手部、核心动作及插图中的主要结构必须有独立 illustration safe box；场景标题、核心标题卡、beat 卡、字幕、转场和其他图片不得与其相交。多图叠加必须在 shot list 中显式声明并通过快照 QA，否则视为失败；禁止靠 z-index 覆盖来“解决”布局。
 - 每集在 storyboard 前必须调用 `ian-xiaomu-illustrations` 并生成 `visual-assets.json`；运行 `scripts/validate_visual_assets.py` 时，`invocation_required=true`、`skill_invoked=true`、shot list 数量和图片资产数量都必须通过。单个场景可标记 `diagram_preferred`，整集不可跳过。
 - 小木 Skill 每集默认生成 4–8 张 16:9 语义锚点图；每张图只表达一个核心动作，小木承担动作，使用 A 版身份参考、自然成人比例和黑白环境/低饱和人物半彩规则。已有本地图片仍要调用 Skill 做 shot 对齐与 QA，只做复用。
 - 小木图片放在项目 `assets/<article-slug>-illustrations/`，在 `visual-assets.json` 和成片 `asset-manifest.json` 记录 `provider`、`invocation_stage`、`skill_invoked`、`shot_id`、路径、哈希和 `reused_existing`。音频中的“cloned Xiaomu voice”不计作插图 Skill 调用。
-- 转场由 `.hyperframes/semantic-motion.json` 的 router 决定：相邻论点主要使用 `push-slide`，重大概念转向使用少量 `zoom-through`，结论/收束使用 `blur-crossfade`；全片最多三种 family。`paper-flip-soft` 只在纸张、笔记或章节语义成立时使用，不再是全片固定默认。下一场标题/核心视觉预入场不超过 0.12 秒，正文 beat 仍按音频 cue；转场不得白闪或盖住正式字幕。
+- 转场由 `.hyperframes/semantic-motion.json` 的 router 决定：默认相邻论点使用 `push-slide`，标题、结论和章节边界使用 `crossfade`，全片最多两种 family。`zoom-through`、`blur-crossfade`、`paper-flip-soft` 只在显式高级档且实现审计通过后使用。下一场标题/核心视觉预入场不超过 0.12 秒，正文 beat 仍按音频 cue；转场不得白闪或盖住正式字幕。
 
 ## 语义动效契约
 
-- 默认 profile 为 `premium-balanced`；`clean` 用于低成本预览，`cinematic` 只在用户明确要求高动态效果时启用。profile、primitive、fallback 和转场候选以 `references/motion-catalog.json` 为唯一机器可读来源。
+- 默认 profile 为 `basic-stable`，只允许已落地、可验证的基础动画；`clean` 用于兼容旧项目，`premium-balanced` 与 `cinematic` 只在用户明确要求且 runtime implementation audit 通过时启用。profile、primitive、fallback 和转场候选以 `references/motion-catalog.json` 为唯一机器可读来源。
+- `basic-stable` 构建时必须裁掉未选中的高级动画 DOM、装饰层和转场节点；高级实现源码可以保留给显式高级档，但默认成片不得加载或执行。
+- 新项目必须按 `references/pipeline-timings-schema.json` 在根目录持续写入 `pipeline-timings.json`：每个阶段和每次重试记录开始/结束/耗时、状态、cache key 与是否缓存命中；汇总时分别报告 wall-clock 与累计 compute。TTS 候选采用“逐个生成、逐个声学/对齐验收、严格区间通过即早停”，默认最多 3 个；VoxCPM2 通过跨进程锁和 `scripts/run_bounded_jobs.py --kind tts` 固定并发为 1，分集构建/渲染通过 `--kind render` 最多双并发。旧项目缺少 timing 文件时必须明确标注时间来自日志或文件时间戳估算。
 - audio boundary、voice stability 和 visual-assets 门禁通过后，运行 `scripts/plan_semantic_motion.py`。输入必须包含 scenes、timeline、approved prosody、caption words 和 visual-assets；输出固定为 `.hyperframes/semantic-motion.json`，初始 `status=draft`。
-- 每场恰好一个 hero motion，并按 profile 配置一到四个 supporting motion。语义角色至少覆盖 hook、definition、process、comparison、metric、warning、demo、hierarchy、example、conclusion、CTA 和保守 statement fallback。
+- 每场恰好一个 hero motion，supporting motion 数量以 `default-profile.yaml` 的 `supporting_motion_range` 为准（`basic-stable` 当前为 1 个）。语义角色至少覆盖 hook、definition、process、comparison、metric、warning、demo、hierarchy、example、conclusion、CTA 和保守 statement fallback。
 - 每个 beat 绑定 scene/sentence/word/focus anchor，同时记录 `cue_s`、`audio_sample` 和 `render_frame`；word cue 可用时禁止退回关键字模糊匹配。输入哈希变化时计划立即 stale，不能平移旧秒数继续使用。
-- 每场记录 `selection_reason`、layout variant、safe boxes、hero/support、transition、beats、intentional holds、budget 和 fallback chain。超过 4 秒没有新 cue 的区间必须声明具体 reason code 和 semantic owner；禁止自动写泛化理由后直接批准。
+- 没有显式 `visual_beats` 时，scene establish beat 也必须绑定 forced-aligned 的第一个有效 word；已有 caption words 时，匹配不到的 focus 不得退回另一套 proportional 秒数。
+- 每场记录 `selection_reason`、`layout_variant`、`layout_family`、`presenter_anchor`、`layout_selection_reason`、safe boxes、hero/support、transition、beats、intentional holds、budget 和 fallback chain。超过 4 秒没有新 cue 的区间必须声明具体 reason code 和 semantic owner；禁止自动写泛化理由后直接批准。
 - 审核语义、anchor、布局和密度后设置 `status=approved` 与 `review.approved_by`，再运行 `scripts/validate_semantic_motion.py --require-approved`。该脚本必须生成 `.hyperframes/motion-qc.json`；source hash、scene ID/order、时间、密度、转场 family、safe zone、fallback 或 seek-safe 任一失败都停止 storyboard 和 render。
-- HyperFrames host 负责 clip、音轨、字幕、SFX 和转场；每场使用独立 scene composition 表达镜内语义。实现时调用 `hyperframes-animation` 的对应 rule/blueprint；图片 wrapper 负责入场，child image 负责 2.5D 慢推，避免同一元素堆叠 transform tween。
-- Storyboard/DOM 完成后，先用 `scripts/init_layout_boxes.py` 从 motion plan 生成待审核模板，再按 `references/layout-box-schema.md` 替换成实际元素坐标：动画元素记录整个运动路径的 `swept_bbox`，人物脸/手/动作、illustration、title、caption 和 avatar 都是 protected element。清除 `needs_dom_review`、设置 `actual_dom_verified=true` 并批准后，运行 `scripts/validate_layout_boxes.py --require-approved` 生成 `.hyperframes/layout-qc.json`；motion plan SHA、scene 顺序、时段、几何或层级任一失败都禁止 render。
+- HyperFrames host 负责 clip、音轨、字幕、SFX 和转场；每场使用独立 scene composition 表达镜内语义。实现时调用 `hyperframes-animation` 的对应 rule/blueprint；默认图片只做一次遮罩揭示或 fade-slide，child image 不做持续 2.5D 慢推，也不在同一元素堆叠 transform tween。
+- `scenes.json` 中每个需要画面响应的语义点声明显式 `visual_beats`（`anchor/title/detail/slot`）；`anchor` 必须能在 forced-aligned `caption-words.json` 中精确找到。Storyboard 必须实现每一个已计划 beat，禁止按卡片数量截断、跳过或用 `focus/items` 数组取模配对。
+- Storyboard/DOM 完成后，先用 `scripts/init_layout_boxes.py` 从 motion plan 生成待审核模板，再按 `references/layout-box-schema.md` 替换成实际元素坐标；优先在预览页面里用 `scripts/extract_layout_boxes.js` 沿 paused timeline 采样自动导出 swept bbox，不要手抄 DOM 几何：动画元素记录整个运动路径的 `swept_bbox`，人物脸/手/动作、illustration、title、caption 和 avatar 都是 protected element。清除 `needs_dom_review`、设置 `actual_dom_verified=true` 并批准后，运行 `scripts/validate_layout_boxes.py --require-approved` 生成 `.hyperframes/layout-qc.json`；motion plan SHA、scene 顺序、时段、几何或层级任一失败都禁止 render。
+- Alignment 门禁除核对 plan、binding、DOM 和 sidecar 外，还必须在 paused GSAP timeline 中找到每个 bound selector 的真实 driver；删除 script、只保留声明元数据或只写 implementation 标签都必须失败。
 - 默认优先 transform、opacity、SVG stroke 与 clip-path。性能不足时按“移除 filter → 压平 3D → 减少装饰/粒子 → shader 改 CSS → fade-slide → static-step”降级；语义 cue、数字、字幕和保护区不得改变。
 - 视觉 QA 至少覆盖标题完整态、每场 establish/hero/payoff/end、所有转场中点、metric/warning/comparison、CTA 三阶段和封面候选。技术 QC 通过不能替代这些快照检查。
 
@@ -82,10 +109,11 @@ visual-assets.json       # ian-xiaomu-illustrations 调用/复用/跳过决定
 - 声音溯源必须指向原始 MP3，但 MP3 只保存原件。先运行 `prepare_voxcpm2_prompt.py` 冻结黄金 prompt；manifest 必须记录原件、prompt WAV、prompt text、提取区间和 SHA-256。
 - VoxCPM2 必须使用 ultimate cloning：`prompt_wav_path`、`reference_wav_path` 都指向黄金 prompt，并传入 exact `prompt_text`。模型 revision、cfg、steps 和 seed 都写入 `voice-manifest.json`。
 - 默认把整集正文与 CTA 一次生成；visual scene 在 forced alignment 后从连续 take 划分。若整集失败，只能按完整句子降级为 45–60 秒块，并共享黄金 prompt 与声学基线。
-- 默认生成 3 个 deterministic seed，最多 5 个。候选先通过 ASR 完整性与 `validate_voice_stability.py`，再按声学连续性、所需增益、局部包络、CPM 的顺序选择；不再只按 CPM 选择。
+- deterministic seed 采用自适应顺序生成：先生成 1 个并立即做声学门禁与 forced alignment，严格 early-stop 区间通过即停止，否则继续，默认上限 3、显式最大 5。硬门禁通过后，用同一机器评分组合 prompt 声学距离、局部 F0/centroid 步进、1 秒包络和 CPM 偏差，选择最低分；不再只按 CPM 选择。
 - 默认目标 295；用户明确要求约 330 时，整集名义目标 330、允许 320–340。连续 take 只做一次全局 retime，0.97–1.03 优先、0.95–1.05 硬上限；超过就重生或改稿。降级分块时所有块的 retime 应相同，相邻差不得超过 0.05。
 - `audio/timeline.json` 仍记录每个视觉 scene 的字数、时长和局部 CPM，作为诊断而不是强制拉伸依据；另记录 `generation_mode=continuous_episode_take`、全局 retime、候选 seed 和 profile SHA。
-- 后处理仅做受限慢速 gain（每句最多 ±3 dB）、一次轻压缩和一次 measured two-pass loudnorm（I≈-16、TP≤-2）。若线性二遍因真峰值余量不足回退 dynamic，必须改用测量目标静态增益加静态 true-peak limiter，并在 manifest 记录回退原因；禁止 scene/master 双重 dynamic loudnorm，禁止固定低频 notch stack 改变男声厚度。连续 take 强制对齐后若仍有局部字幕/边界跳变，只能运行 `scripts/stabilize_aligned_continuous.py` 做 0.5 秒窗口的受限 gain 平滑、边界渐变和静态真峰值保护；边界测量必须与 voice QC 统一采用 40ms/20ms 有声帧；它不再跑第二次 loudnorm，完成后必须更新 manifest 并重跑 QC。
+- 后处理仅做受限慢速 gain（每句最多 ±3 dB）、一次轻压缩和一次 measured two-pass loudnorm（I≈-16、TP≤-2）。若线性二遍因真峰值余量不足回退 dynamic，必须改用测量目标静态增益加静态 true-peak limiter，并在 manifest 记录回退原因；禁止 scene/master 双重 dynamic loudnorm，禁止固定低频 notch stack 改变男声厚度。连续 take 强制对齐后若仍有局部字幕/边界跳变，只能运行 `scripts/stabilize_aligned_continuous.py` 做 0.5 秒窗口的受限 gain 平滑、边界渐变和静态真峰值保护；边界测量必须与 voice QC 统一采用 40ms/20ms 有声帧；它不再跑第二次 loudnorm，完成后必须更新 manifest 并重跑 QC。使用 FFmpeg `alimiter` 时必须显式 `level=false`，禁止其默认自动补偿把已降低的电平重新抬高；只需静态降益且真峰值已有余量时不要额外串 limiter。
+- 多集拼长视频时，声音硬门禁由“每集 continuous take 单独通过完整声音 QC”与“去掉中间 CTA 后相邻两集真实口播端点的跨章响度差通过”共同组成；章节间已登记的约 1 秒标题卡静音不得误判为爆音或音量骤降。全片通用窗口扫描只作诊断报告，不替代逐集门禁。
 - master 先完成整集 forced alignment，再运行 `validate_audio_boundaries.py`，随后运行 `validate_voice_stability.py`。后一门禁检查 1 秒包络、字幕短语、边界、F0、spectral centroid 和 retime；阈值唯一来源是 `voice-stability-profile.json`。连续 take 的 scene gap 是同一 master 上的分析切点，不按 120–200ms 拼接静音判错，但禁止时间范围重叠，仍必须通过边界 RMS/LUFS。任一失败时停止渲染：局部 gain 项可按上述 stabilizer 重算，F0/音色/气息/retime 失败必须换 seed。
 - 所有报告都必须绑定当前 master、timeline、caption、prosody、prompt/reference 和 profile SHA；不匹配即 stale。更新音频后必须重新 forced-align，禁止只平移旧字幕。
 - 最终混音也必须单独验收。若渲染器把 mono narration 复制为 dual-mono stereo，使用 `1/√2≈0.7071` 的渲染增益抵消约 +3.01 LU 的通道求和；最终 MP4 必须落在 -17.5 到 -14.5 LUFS 且真峰值不高于 -1.8dBTP。master 通过但 final 失败时仍禁止交付。
@@ -123,6 +151,8 @@ semantic-motion.json
 motion-qc.json
 layout-boxes.json
 layout-qc.json
+alignment-qc.json
+pipeline-timings.json
 ```
 
 ## 外部交付目录契约

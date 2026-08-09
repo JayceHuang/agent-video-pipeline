@@ -67,6 +67,28 @@ def active_power_mean_samples(
     return 10.0 * math.log10(float(np.mean(10.0 ** (np.asarray(levels) / 10.0))) + 1e-15)
 
 
+def active_median_samples(
+    samples: np.ndarray,
+    sample_rate: int,
+    start_s: float,
+    end_s: float,
+    gate_db: float = -32.0,
+    frame_s: float = 0.04,
+    hop_s: float = 0.02,
+) -> float | None:
+    """Match the voice QC caption meter (active-frame median)."""
+    frame = max(2, round(sample_rate * frame_s))
+    hop = max(1, round(sample_rate * hop_s))
+    start = max(0, round(start_s * sample_rate))
+    stop = min(samples.size, round(end_s * sample_rate))
+    levels = [
+        db_rms(samples[offset : offset + frame])
+        for offset in range(start, max(start, stop - frame + 1), hop)
+    ]
+    active = [value for value in levels if value >= gate_db]
+    return float(np.median(np.asarray(active))) if active else None
+
+
 def parse_loudnorm(stderr: str) -> dict[str, Any]:
     matches = re.findall(r'\{\s*"input_i".*?\}', stderr, flags=re.DOTALL)
     if not matches:
@@ -256,6 +278,71 @@ def apply_boundary_corrections(
     return output, corrections
 
 
+def apply_caption_smoothing(
+    samples: np.ndarray,
+    sample_rate: int,
+    captions: list[dict[str, Any]],
+    gate_db: float,
+    *,
+    max_adjacent_step_db: float = 1.2,
+    gain_limit_db: float = 2.6,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Project aligned caption levels onto one continuous safe gain curve.
+
+    The previous window-only rider could leave a short phrase 2–3 dB away
+    from its neighbour, requiring repeated full passes.  This projection uses
+    the validator's 40ms/20ms speech-active meter and corrects all captions in
+    the same single pass without creating per-caption gain discontinuities.
+    """
+    centers: list[float] = []
+    levels: list[float] = []
+    for row in captions:
+        start = float(row.get("start", 0.0))
+        end = float(row.get("end", 0.0))
+        level = active_median_samples(samples, sample_rate, start, end, gate_db)
+        if level is None:
+            continue
+        centers.append((start + end) / 2.0)
+        levels.append(level)
+    if len(levels) < 2:
+        return samples, {
+            "method": "aligned_caption_continuous_gain_curve",
+            "caption_count": len(levels),
+            "max_abs_gain_db": 0.0,
+            "applied": False,
+        }
+    target = np.asarray(levels, dtype=np.float64)
+    for _ in range(8):
+        for index in range(1, target.size):
+            target[index] = np.clip(
+                target[index],
+                target[index - 1] - max_adjacent_step_db,
+                target[index - 1] + max_adjacent_step_db,
+            )
+        for index in range(target.size - 2, -1, -1):
+            target[index] = np.clip(
+                target[index],
+                target[index + 1] - max_adjacent_step_db,
+                target[index + 1] + max_adjacent_step_db,
+            )
+    corrections = np.clip(
+        target - np.asarray(levels, dtype=np.float64), -gain_limit_db, gain_limit_db
+    )
+    sample_times = np.arange(samples.size, dtype=np.float64) / sample_rate
+    control_times = np.concatenate(([0.0], np.asarray(centers), [samples.size / sample_rate]))
+    control_gain = np.concatenate(([corrections[0]], corrections, [corrections[-1]]))
+    gain_db = np.interp(sample_times, control_times, control_gain)
+    output = samples * np.power(10.0, gain_db / 20.0).astype(np.float32)
+    return output, {
+        "method": "aligned_caption_continuous_gain_curve",
+        "caption_count": len(levels),
+        "max_adjacent_step_target_db": max_adjacent_step_db,
+        "gain_limit_db": gain_limit_db,
+        "max_abs_gain_db": round(float(np.max(np.abs(corrections))), 3),
+        "applied": bool(np.max(np.abs(corrections)) >= 0.01),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True)
@@ -282,6 +369,7 @@ def main() -> int:
     )
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
     timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    caption_doc = json.loads(captions_path.read_text(encoding="utf-8"))
     if timeline.get("generation_mode") != "continuous_episode_take":
         raise RuntimeError("aligned stabilization requires generation_mode=continuous_episode_take")
     if str(timeline.get("alignment_status", "")) != "forced_aligned":
@@ -295,7 +383,12 @@ def main() -> int:
     samples = np.asarray(samples, dtype=np.float32).reshape(-1)
     gate = float(profile["analysis"]["speech_gate_dbfs"])
     smoothed, rider = apply_rider(samples, sample_rate, gate)
-    corrected, boundary_corrections = apply_boundary_corrections(smoothed, sample_rate, timeline)
+    caption_smoothed, caption_smoothing = apply_caption_smoothing(
+        smoothed, sample_rate, list(caption_doc.get("groups", [])), gate
+    )
+    corrected, boundary_corrections = apply_boundary_corrections(
+        caption_smoothed, sample_rate, timeline
+    )
 
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_dir = Path(tempfile.mkdtemp(prefix=".aligned-stabilization-", dir=target.parent))
@@ -345,6 +438,7 @@ def main() -> int:
         "sample_rate": sample_rate,
         "duration_s": round(samples.size / sample_rate, 6),
         "rider": rider,
+        "caption_smoothing": caption_smoothing,
         "boundary_corrections": boundary_corrections,
         "static_target_gain_db": round(global_gain_db, 3),
         "true_peak_limiter": {"limit": round(true_peak_limit, 6), "ceiling_dbtp": -2.2},

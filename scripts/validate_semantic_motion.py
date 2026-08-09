@@ -212,6 +212,24 @@ def main() -> int:
     primitives = catalog.get("primitives", {})
     recipes = catalog.get("semantic_recipes", {})
     max_tier = TIER_RANK.get(str(profile.get("max_primitive_tier", "low")), 0) if profile else 0
+    allowed_primitives = {
+        str(item) for item in profile.get("allowed_primitives", [])
+    } if profile else set()
+    runtime_implemented: set[str] = set()
+    layout_catalog = catalog.get("layout_variants", {})
+    layout_policy = catalog.get("layout_policy", {})
+    layout_ids: list[str] = []
+    if profile_id in {"premium-balanced", "cinematic"}:
+        audit_source = plan.get("sources", {}).get("runtime_audit", {}) if isinstance(plan.get("sources"), dict) else {}
+        audit_path = Path(str(audit_source.get("path", ""))).expanduser() if isinstance(audit_source, dict) else Path()
+        if not audit_path.is_file():
+            errors.append(f"advanced profile {profile_id} requires a current runtime implementation audit")
+        else:
+            audit = load_json(audit_path)
+            if not isinstance(audit, dict) or audit.get("status") != "pass" or audit.get("profile_id") != profile_id:
+                errors.append("runtime implementation audit did not pass or profile differs")
+            else:
+                runtime_implemented = {str(item) for item in audit.get("implemented_primitives", [])}
 
     for scene in scenes:
         if not isinstance(scene, dict):
@@ -237,6 +255,20 @@ def main() -> int:
             errors.append(f"{scene_id}: unknown semantic_role={role}")
         if not str(scene.get("selection_reason", "")).strip():
             errors.append(f"{scene_id}: missing selection_reason")
+        layout_id = str(scene.get("layout_variant", ""))
+        layout_spec = layout_catalog.get(layout_id)
+        if not isinstance(layout_spec, dict):
+            errors.append(f"{scene_id}: unknown layout_variant={layout_id or '<missing>'}")
+        else:
+            if layout_ids and layout_policy.get("forbid_adjacent_repeat") and layout_ids[-1] == layout_id:
+                errors.append(f"{scene_id}: adjacent scenes may not repeat layout {layout_id}")
+            if layout_spec.get("requires_asset") and not scene.get("asset_refs"):
+                errors.append(f"{scene_id}: layout {layout_id} requires a visual asset")
+            if str(scene.get("presenter_anchor", "")) != str(layout_spec.get("presenter_anchor", "")):
+                errors.append(f"{scene_id}: presenter_anchor does not match layout catalog")
+            if not str(scene.get("layout_selection_reason", "")).strip():
+                errors.append(f"{scene_id}: missing layout_selection_reason")
+        layout_ids.append(layout_id)
         validate_boxes(scene_id, scene.get("safe_boxes"), errors, warnings)
 
         hero = scene.get("hero_motion")
@@ -260,6 +292,10 @@ def main() -> int:
                 errors.append(f"{scene_id}: unknown motion primitive {motion_id}")
             elif TIER_RANK.get(str(spec.get("tier")), 99) > max_tier:
                 errors.append(f"{scene_id}: primitive {motion_id} exceeds profile tier")
+            elif allowed_primitives and motion_id not in allowed_primitives:
+                errors.append(f"{scene_id}: primitive {motion_id} is not implemented by profile {profile_id}")
+            elif runtime_implemented and motion_id not in runtime_implemented:
+                errors.append(f"{scene_id}: primitive {motion_id} is absent from runtime implementation audit")
 
         transition = scene.get("transition_in", {}) if isinstance(scene.get("transition_in"), dict) else {}
         transition_id = str(transition.get("id", ""))
@@ -324,9 +360,26 @@ def main() -> int:
             primitive_id = str(beat.get("primitive", ""))
             if primitive_id not in primitives:
                 errors.append(f"{beat_id}: unknown primitive {primitive_id}")
+            elif TIER_RANK.get(str(primitives[primitive_id].get("tier")), 99) > max_tier:
+                errors.append(f"{beat_id}: primitive {primitive_id} exceeds profile tier")
+            elif allowed_primitives and primitive_id not in allowed_primitives:
+                errors.append(f"{beat_id}: primitive {primitive_id} is not implemented by profile {profile_id}")
+            elif runtime_implemented and primitive_id not in runtime_implemented:
+                errors.append(f"{beat_id}: primitive {primitive_id} is absent from runtime implementation audit")
             chain = beat.get("fallback_chain", [])
             if not isinstance(chain, list) or not chain or chain[0] != primitive_id or chain[-1] != "static-step":
                 errors.append(f"{beat_id}: fallback_chain must start with primitive and end with static-step")
+            elif any(item not in primitives for item in chain):
+                errors.append(f"{beat_id}: fallback_chain contains an unknown primitive")
+            else:
+                disallowed_fallbacks = [
+                    item for item in chain
+                    if TIER_RANK.get(str(primitives[item].get("tier")), 99) > max_tier
+                    or (allowed_primitives and item not in allowed_primitives)
+                    or (runtime_implemented and item not in runtime_implemented)
+                ]
+                if disallowed_fallbacks:
+                    errors.append(f"{beat_id}: fallback_chain exceeds profile/runtime implementation: {disallowed_fallbacks}")
             if beat.get("seek_safe") is not True or beat.get("loop") is not False:
                 errors.append(f"{beat_id}: motion must be seek_safe and non-looping")
             priority = str(beat.get("priority", "support"))
@@ -399,6 +452,16 @@ def main() -> int:
         }
 
     transition_families = sorted({item for item in transitions if item and item != "cut"})
+    distinct_layouts = sorted(set(layout_ids))
+    metrics["layout_variants"] = layout_ids
+    metrics["distinct_layouts"] = distinct_layouts
+    minimum_layouts = min(
+        len(layout_ids), int(layout_policy.get("minimum_distinct_layouts_per_episode", 1))
+    )
+    if len(distinct_layouts) < minimum_layouts:
+        errors.append(
+            f"layout variety too low: {len(distinct_layouts)} distinct, require {minimum_layouts}"
+        )
     metrics["transition_families"] = transition_families
     metrics["shader_transitions"] = shader_count
     if profile:

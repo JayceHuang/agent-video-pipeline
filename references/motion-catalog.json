@@ -1,7 +1,37 @@
 {
   "schema_version": 1,
-  "default_profile": "premium-balanced",
+  "default_profile": "basic-stable",
   "profiles": {
+    "basic-stable": {
+      "description": "默认批量生产模式：只使用已经落地的基础动画，优先稳定、可见、易验证。",
+      "max_primitive_tier": "low",
+      "allowed_primitives": [
+        "fade-slide",
+        "accent-rule-draw",
+        "semantic-card-reveal",
+        "stagger-card-assemble",
+        "active-step-highlight",
+        "node-activation",
+        "follow-card-arrow-single-ripple",
+        "static-step"
+      ],
+      "support_motion_range": [1, 1],
+      "event_interval_s": [3.0, 5.5],
+      "max_events_per_scene": 5,
+      "max_simultaneous_animated_elements": 3,
+      "max_primary_concurrent": 1,
+      "max_support_concurrent": 1,
+      "max_major_camera_moves_per_scene": 0,
+      "max_particles_per_scene": 0,
+      "max_rolling_motion_points_10s": 2.5,
+      "max_kinetic_duty_cycle": 0.25,
+      "max_continuous_motion_s": 1.2,
+      "min_primary_gap_s": 1.5,
+      "max_transition_families": 2,
+      "max_shader_transitions": 0,
+      "prune_unselected_advanced_dom": true,
+      "transition_grammar": ["crossfade", "push-slide"]
+    },
     "clean": {
       "description": "低风险、低装饰的清晰教程模式。",
       "max_primitive_tier": "low",
@@ -22,7 +52,7 @@
       "transition_grammar": ["crossfade", "push-slide"]
     },
     "premium-balanced": {
-      "description": "默认批量生产模式：高级但克制，语义主导，兼顾稳定渲染。",
+      "description": "可选高级模式：语义主导，但必须显式请求并通过 runtime implementation audit。",
       "max_primitive_tier": "medium",
       "support_motion_range": [2, 3],
       "event_interval_s": [1.6, 3.2],
@@ -58,6 +88,63 @@
       "max_transition_families": 3,
       "max_shader_transitions": 2,
       "transition_grammar": ["cinematic-zoom", "domain-warp", "blur-crossfade"]
+    }
+  },
+  "layout_policy": {
+    "mode": "semantic-deterministic-rotation",
+    "minimum_distinct_layouts_per_episode": 3,
+    "forbid_adjacent_repeat": true,
+    "forbid_centered_presenter_default": true,
+    "presenter_may_be_omitted_for_diagram_scenes": false
+  },
+  "layout_variants": {
+    "host-left-board-right": {
+      "family": "presenter-board",
+      "presenter_anchor": "left",
+      "requires_asset": true,
+      "description": "人物靠左，右侧承担核心卡片和步骤；不从中心向两侧展开。"
+    },
+    "host-right-board-left": {
+      "family": "presenter-board",
+      "presenter_anchor": "right",
+      "requires_asset": true,
+      "description": "人物靠右，左侧承担定义、对比或证据。"
+    },
+    "host-upper-corner-canvas": {
+      "family": "corner-host",
+      "presenter_anchor": "upper-right",
+      "requires_asset": true,
+      "description": "人物缩到右上角，画面主体变成大面积信息画布。"
+    },
+    "diagram-full-width": {
+      "family": "diagram",
+      "presenter_anchor": "upper-right-when-host",
+      "requires_asset": false,
+      "description": "流程、层级或结构图承担横向主视觉；人物资产出现时缩到右上角。"
+    },
+    "editorial-offset": {
+      "family": "editorial",
+      "presenter_anchor": "left-third",
+      "requires_asset": false,
+      "description": "标题、人物/插图和结论采用不对称三分构图。"
+    },
+    "split-evidence": {
+      "family": "split",
+      "presenter_anchor": "outer-edge",
+      "requires_asset": false,
+      "description": "左右两块证据区，主体贴外边缘而不是居中。"
+    },
+    "top-strip-process": {
+      "family": "process-strip",
+      "presenter_anchor": "upper-right-small",
+      "requires_asset": false,
+      "description": "顶部结论条配合下方横向步骤，适合流程和清单。"
+    },
+    "card-field-corner-visual": {
+      "family": "card-field",
+      "presenter_anchor": "upper-right-small",
+      "requires_asset": false,
+      "description": "卡片、节点或数据成为主体，人物或插图缩到右上角作辅助。"
     }
   },
   "motion_costs": {
@@ -109,72 +196,84 @@
   "semantic_recipes": {
     "hook": {
       "layout": "asymmetric-hero",
+      "layout_candidates": ["editorial-offset", "host-right-board-left", "host-upper-corner-canvas"],
       "blueprint": "kinetic-type-beats",
       "hero": ["camera-punch-type", "scanline-title-build", "kinetic-focus-lock"],
       "support": ["keyword-cascade", "accent-rule-draw", "ambient-glow-bloom"]
     },
     "definition": {
       "layout": "term-left-media-right",
+      "layout_candidates": ["host-right-board-left", "editorial-offset", "split-evidence"],
       "blueprint": "definition-lockup",
       "hero": ["term-pin-definition-reveal", "semantic-card-reveal"],
       "support": ["media-mask-reveal", "focus-marker-draw", "keyword-glow-once"]
     },
     "process": {
       "layout": "path-center-steps-sides",
+      "layout_candidates": ["top-strip-process", "diagram-full-width", "host-left-board-right"],
       "blueprint": "spatial-pan-stations",
       "hero": ["ordered-path-draw", "stagger-card-assemble"],
       "support": ["node-activation", "active-step-highlight", "camera-track-nodes"]
     },
     "comparison": {
       "layout": "protected-split-frame",
+      "layout_candidates": ["split-evidence", "host-right-board-left", "card-field-corner-visual"],
       "blueprint": "comparison-split",
       "hero": ["split-tilt-cards", "semantic-card-reveal"],
       "support": ["difference-marker", "paired-label-lock", "accent-rule-draw"]
     },
     "metric": {
       "layout": "metric-hero-with-proof",
+      "layout_candidates": ["editorial-offset", "card-field-corner-visual", "host-left-board-right"],
       "blueprint": "dataviz-countup",
       "hero": ["numeric-arrow-transform", "semantic-card-reveal"],
       "support": ["stat-bars-and-fills", "impact-pulse-once", "accent-rule-draw"]
     },
     "warning": {
       "layout": "warning-rail-with-evidence",
+      "layout_candidates": ["host-left-board-right", "split-evidence", "top-strip-process"],
       "blueprint": "warning-frame",
       "hero": ["warning-frame-tighten", "semantic-card-reveal"],
       "support": ["single-attention-pulse", "difference-marker", "focus-marker-draw"]
     },
     "demo": {
       "layout": "device-window-with-callouts",
+      "layout_candidates": ["host-right-board-left", "host-upper-corner-canvas", "diagram-full-width"],
       "blueprint": "cursor-ui-demo",
       "hero": ["cursor-ui-demo", "device-window-reveal"],
       "support": ["command-type-on", "focus-marker-draw", "media-parallax-reveal"]
     },
     "hierarchy": {
       "layout": "hub-and-levels",
+      "layout_candidates": ["diagram-full-width", "top-strip-process", "card-field-corner-visual"],
       "blueprint": "constellation-hub",
       "hero": ["ordered-path-draw", "stagger-card-assemble"],
       "support": ["node-activation", "paired-label-lock", "accent-rule-draw"]
     },
     "example": {
       "layout": "staggered-evidence-cards",
+      "layout_candidates": ["host-left-board-right", "card-field-corner-visual", "editorial-offset"],
       "blueprint": "grid-card-assemble",
       "hero": ["stagger-card-assemble", "semantic-card-reveal"],
       "support": ["media-parallax-reveal", "focus-marker-draw", "keyword-glow-once"]
     },
     "conclusion": {
       "layout": "convergence-to-claim",
+      "layout_candidates": ["editorial-offset", "host-upper-corner-canvas", "card-field-corner-visual"],
       "blueprint": "titlecard-reveal",
       "hero": ["converge-to-claim", "semantic-card-reveal"],
       "support": ["summary-node-convergence", "claim-land", "soft-focus-pull"]
     },
     "cta": {
       "layout": "cta-right-avatar-clear",
+      "layout_candidates": ["host-right-board-left", "editorial-offset", "host-upper-corner-canvas"],
       "blueprint": "cta-morph-press",
       "hero": ["follow-card-arrow-single-ripple"],
       "support": ["accent-rule-draw", "keyword-glow-once"]
     },
     "statement": {
       "layout": "editorial-text-with-media",
+      "layout_candidates": ["editorial-offset", "host-left-board-right", "host-right-board-left", "card-field-corner-visual"],
       "blueprint": "titlecard-reveal",
       "hero": ["semantic-card-reveal", "term-pin-definition-reveal"],
       "support": ["media-parallax-reveal", "focus-marker-draw", "accent-rule-draw"]

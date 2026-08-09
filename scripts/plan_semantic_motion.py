@@ -135,14 +135,19 @@ def classify_scene(scene: dict[str, Any], index: int, total: int) -> tuple[str, 
 
 
 def allowed_candidates(
-    ids: list[str], primitives: dict[str, Any], max_tier: str
+    ids: list[str], primitives: dict[str, Any], max_tier: str,
+    allowed_ids: set[str] | None = None, fallback: str = "semantic-card-reveal",
 ) -> list[str]:
     ceiling = TIER_RANK[max_tier]
     values = [
         item for item in ids
-        if item in primitives and TIER_RANK.get(str(primitives[item].get("tier")), 99) <= ceiling
+        if item in primitives
+        and (not allowed_ids or item in allowed_ids)
+        and TIER_RANK.get(str(primitives[item].get("tier")), 99) <= ceiling
     ]
-    return values or ["semantic-card-reveal"]
+    if allowed_ids and fallback not in allowed_ids:
+        raise ValueError(f"motion profile does not allow its fallback primitive: {fallback}")
+    return values or [fallback]
 
 
 def primitive_spec(primitive_id: str, primitives: dict[str, Any], costs: dict[str, float]) -> dict[str, Any]:
@@ -252,7 +257,7 @@ def word_anchor(term: str, words: list[dict[str, Any]], start_char: int = 0) -> 
     haystack = "".join(chars)
     needle = normalize(term)
     position = haystack.find(needle, max(0, start_char))
-    if position < 0:
+    if position < 0 and start_char <= 0:
         position = haystack.find(needle)
     if position < 0:
         return None
@@ -307,13 +312,33 @@ def semantic_candidates(
             })
         return candidates
 
+    first_aligned_word = next(
+        (word for word in words if normalize(str(word.get("text", "")))),
+        None,
+    )
+    if first_aligned_word:
+        first_anchor = str(first_aligned_word.get("text", "")).strip()
+        first_cue = float(first_aligned_word.get("start", first_aligned_word.get("start_s", start)))
+        first_word_id = str(first_aligned_word.get("id")) if first_aligned_word.get("id") else None
+        first_source = "caption-word"
+    else:
+        first_anchor = str(scene.get("text") or scene.get("title") or scene.get("kicker") or "场景建立")[:12]
+        first_cue = start + min(0.08, max(0.0, (end - start) * 0.02))
+        first_word_id = None
+        first_source = "scene-start"
     candidates: list[dict[str, Any]] = [{
-        "anchor": str(scene.get("title") or scene.get("kicker") or "场景建立"),
-        "cue_s": start + min(0.08, max(0.0, (end - start) * 0.02)),
-        "cue_source": "scene-start",
+        "anchor": first_anchor,
+        "cue_s": first_cue,
+        "cue_source": first_source,
         "sentence_id": None,
-        "word_id": None,
+        "word_id": first_word_id,
         "occurrence": 1,
+        "visual": {
+            "title": str(scene.get("title") or scene.get("kicker") or first_anchor),
+            "detail": "",
+            "slot": 1,
+            "role": "scene-establish",
+        },
     }]
     search_cursor = 0
     seen: set[str] = set()
@@ -332,6 +357,10 @@ def semantic_candidates(
             if match:
                 cue, word_id, occurrence, search_cursor = match
                 source = "caption-word"
+            elif words:
+                # Forced alignment is available, so an unaligned semantic term
+                # is not allowed to create a second, unverifiable timebase.
+                continue
             else:
                 cue = float(segment.get("start_s", start))
                 word_id = None
@@ -346,7 +375,7 @@ def semantic_candidates(
                 "occurrence": occurrence,
             })
     if CTA_TEXT in scene["text"]:
-        match = word_anchor("关注我", words, search_cursor)
+        match = word_anchor("关注我", words, search_cursor) or word_anchor("关注我", words, 0)
         candidates.append({
             "anchor": CTA_TEXT,
             "cue_s": match[0] if match else max(start, end - min(2.4, (end - start) * 0.22)),
@@ -381,6 +410,28 @@ def default_safe_boxes() -> list[dict[str, Any]]:
         {"id": "scene-title", "role": "title", "shape": "rect", "x": 96, "y": 64, "width": 1510, "height": 170, "protected": True},
         {"id": "content-zone", "role": "content", "shape": "rect", "x": 110, "y": 250, "width": 760, "height": 490, "protected": False},
         {"id": "illustration-zone", "role": "illustration", "shape": "rect", "x": 960, "y": 250, "width": 760, "height": 500, "protected": True},
+        {"id": "caption-zone", "role": "caption", "shape": "rect", "x": 368, "y": 900, "width": 1312, "height": 152, "protected": True},
+        {"id": "avatar-circle", "role": "avatar", "shape": "circle", "x": 42, "y": 752, "diameter": 300, "protected": True},
+    ]
+
+
+def layout_safe_boxes(layout_id: str) -> list[dict[str, Any]]:
+    """Return precomputed layout zones; animation code must not measure DOM at tween time."""
+    zones = {
+        "host-left-board-right": ((110, 300, 360, 440), (540, 260, 1180, 580)),
+        "host-right-board-left": ((1470, 300, 300, 440), (100, 260, 1260, 580)),
+        "host-upper-corner-canvas": ((1480, 250, 250, 360), (100, 260, 1280, 580)),
+        "diagram-full-width": ((300, 250, 950, 430), (1280, 260, 440, 540)),
+        "editorial-offset": ((120, 300, 500, 390), (700, 260, 1020, 560)),
+        "split-evidence": ((1430, 300, 300, 390), (100, 260, 1220, 560)),
+        "top-strip-process": ((1480, 260, 240, 300), (100, 260, 1300, 560)),
+        "card-field-corner-visual": ((1510, 260, 270, 300), (100, 260, 1320, 560)),
+    }
+    illustration, content = zones.get(layout_id, ((960, 250, 760, 500), (110, 250, 760, 490)))
+    return [
+        {"id": "scene-title", "role": "title", "shape": "rect", "x": 96, "y": 64, "width": 1510, "height": 170, "protected": True},
+        {"id": "content-zone", "role": "content", "shape": "rect", "x": content[0], "y": content[1], "width": content[2], "height": content[3], "protected": False},
+        {"id": "illustration-zone", "role": "illustration", "shape": "rect", "x": illustration[0], "y": illustration[1], "width": illustration[2], "height": illustration[3], "protected": True},
         {"id": "caption-zone", "role": "caption", "shape": "rect", "x": 368, "y": 900, "width": 1312, "height": 152, "protected": True},
         {"id": "avatar-circle", "role": "avatar", "shape": "circle", "x": 42, "y": 752, "diameter": 300, "protected": True},
     ]
@@ -429,6 +480,7 @@ def build_scene_plan(
     scene: dict[str, Any], index: int, total: int, timing: dict[str, Any], prosody: dict[str, Any],
     words: list[dict[str, Any]], visual_assets: Any, profile_id: str, profile: dict[str, Any],
     catalog: dict[str, Any], seed: int, previous_role: str | None, previous_hero: str | None,
+    previous_layout: str | None, used_layouts: set[str],
     sample_rate: int, fps: int
 ) -> dict[str, Any]:
     start = float(timing["start_s"])
@@ -441,15 +493,41 @@ def build_scene_plan(
         reason += "; unknown role fell back to statement"
         confidence = min(confidence, 0.5)
     recipe = recipes[role]
+    scene_asset_refs = asset_refs(scene, visual_assets)
+    layout_catalog = catalog.get("layout_variants", {})
+    layout_choices = [
+        str(item) for item in recipe.get("layout_candidates", [])
+        if item in layout_catalog
+        and (not layout_catalog[item].get("requires_asset") or bool(scene_asset_refs))
+    ]
+    if not layout_choices:
+        layout_choices = ["editorial-offset"]
+    first_layout_index = stable_index(seed, f"{scene['id']}:layout", len(layout_choices))
+    rotated_layouts = layout_choices[first_layout_index:] + layout_choices[:first_layout_index]
+    if len(used_layouts) < 3:
+        unused = [item for item in rotated_layouts if item not in used_layouts and item != previous_layout]
+        layout_id = unused[0] if unused else next(
+            (item for item in rotated_layouts if item != previous_layout), rotated_layouts[0]
+        )
+    else:
+        layout_id = next((item for item in rotated_layouts if item != previous_layout), rotated_layouts[0])
+    layout_spec = layout_catalog[layout_id]
     primitives = catalog["primitives"]
     costs = catalog["motion_costs"]
-    hero_choices = allowed_candidates(recipe["hero"], primitives, profile["max_primitive_tier"])
+    allowed_ids = set(str(item) for item in profile.get("allowed_primitives", [])) or None
+    hero_choices = allowed_candidates(
+        recipe["hero"], primitives, profile["max_primitive_tier"], allowed_ids,
+        "semantic-card-reveal",
+    )
     hero_choice_index = stable_index(seed, f"{scene['id']}:hero", len(hero_choices))
     hero_id = hero_choices[hero_choice_index]
     if previous_hero == hero_id and len(hero_choices) > 1:
         hero_id = hero_choices[(hero_choice_index + 1) % len(hero_choices)]
         reason += "; rotated hero candidate to avoid an identical adjacent scene"
-    support_choices = allowed_candidates(recipe["support"], primitives, profile["max_primitive_tier"])
+    support_choices = allowed_candidates(
+        recipe["support"], primitives, profile["max_primitive_tier"], allowed_ids,
+        "accent-rule-draw",
+    )
 
     avg_interval = sum(profile["event_interval_s"]) / 2.0
     explicit_visual_beats = scene.get("visual_beats", [])
@@ -550,10 +628,13 @@ def build_scene_plan(
         "semantic_role": role,
         "selection_reason": reason,
         "classification_confidence": confidence,
-        "layout_variant": recipe["layout"],
+        "layout_variant": layout_id,
+        "layout_family": layout_spec["family"],
+        "presenter_anchor": layout_spec["presenter_anchor"],
+        "layout_selection_reason": f"semantic role={role}; deterministic rotation; previous={previous_layout or 'none'}",
         "blueprint": recipe["blueprint"],
-        "safe_boxes": default_safe_boxes(),
-        "asset_refs": asset_refs(scene, visual_assets),
+        "safe_boxes": layout_safe_boxes(layout_id),
+        "asset_refs": scene_asset_refs,
         "hero_motion": primitive_spec(hero_id, primitives, costs),
         "supporting_motions": [primitive_spec(item, primitives, costs) for item in support_ids],
         "transition_in": {
@@ -584,7 +665,12 @@ def main() -> int:
     parser.add_argument("--visual-assets", type=Path, required=True)
     parser.add_argument("--caption-words", type=Path)
     parser.add_argument("--catalog", type=Path)
-    parser.add_argument("--profile", default="premium-balanced")
+    parser.add_argument("--profile", default="basic-stable")
+    parser.add_argument(
+        "--runtime-audit",
+        type=Path,
+        help="Required capability audit for premium-balanced/cinematic profiles.",
+    )
     parser.add_argument("--seed", type=int, default=20260807)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -607,6 +693,25 @@ def main() -> int:
     if args.profile not in catalog.get("profiles", {}):
         raise ValueError(f"unknown motion profile: {args.profile}")
     profile = catalog["profiles"][args.profile]
+    advanced_profile = args.profile in {"premium-balanced", "cinematic"}
+    runtime_audit: dict[str, Any] | None = None
+    if advanced_profile:
+        if not args.runtime_audit:
+            raise ValueError(
+                f"{args.profile} requires --runtime-audit from an explicit runtime implementation audit"
+            )
+        audit_path = args.runtime_audit.expanduser().resolve()
+        if not audit_path.is_file():
+            raise FileNotFoundError(f"missing runtime audit: {audit_path}")
+        runtime_audit = load_json(audit_path)
+        if not isinstance(runtime_audit, dict):
+            raise ValueError("runtime audit must be a JSON object")
+        if runtime_audit.get("status") != "pass" or runtime_audit.get("profile_id") != args.profile:
+            raise ValueError("runtime audit must pass and match the requested advanced profile")
+        implemented = runtime_audit.get("implemented_primitives")
+        if not isinstance(implemented, list) or not implemented:
+            raise ValueError("runtime audit must list implemented_primitives")
+        paths["runtime_audit"] = audit_path
     scene_metadata, scenes = load_scenes(load_json(paths["scenes"]))
     timings, sample_rate, fps_from_timeline = timeline_map(load_json(paths["timeline"]))
     fps = int(scene_metadata.get("fps", fps_from_timeline or 30))
@@ -624,15 +729,35 @@ def main() -> int:
     plans: list[dict[str, Any]] = []
     previous_role: str | None = None
     previous_hero: str | None = None
+    previous_layout: str | None = None
+    used_layouts: set[str] = set()
     for index, scene in enumerate(scenes):
         plan = build_scene_plan(
             scene, index, len(scenes), timings[scene["id"]], prosodies[scene["id"]],
             word_groups.get(scene["id"], []), visual_assets, args.profile, profile,
-            catalog, args.seed, previous_role, previous_hero, sample_rate, fps,
+            catalog, args.seed, previous_role, previous_hero, previous_layout, used_layouts,
+            sample_rate, fps,
         )
         plans.append(plan)
         previous_role = str(plan["semantic_role"])
         previous_hero = str(plan["hero_motion"]["id"])
+        previous_layout = str(plan["layout_variant"])
+        used_layouts.add(previous_layout)
+
+    if runtime_audit is not None:
+        implemented = {str(item) for item in runtime_audit["implemented_primitives"]}
+        used = {
+            str(item)
+            for plan in plans
+            for item in (
+                [plan["hero_motion"]["id"]]
+                + [motion["id"] for motion in plan["supporting_motions"]]
+                + [beat["primitive"] for beat in plan["beats"]]
+            )
+        }
+        missing = sorted(used - implemented)
+        if missing:
+            raise ValueError(f"runtime audit does not implement planned primitives: {missing}")
 
     source_manifest = {
         name: {"path": str(path), "sha256": file_sha256(path)} for name, path in paths.items()
@@ -652,6 +777,7 @@ def main() -> int:
             "catalog_sha256": file_sha256(catalog_path),
             "description": profile["description"],
             "budgets": profile,
+            "runtime_audit_required": advanced_profile,
         },
         "seed": args.seed,
         "sources": source_manifest,
