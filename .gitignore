@@ -10,6 +10,12 @@ venv/
 *.pem
 *.key
 
+# Local agent-video configuration (may contain private paths/credentials)
+.agent-video/runtime.local.yaml
+.agent-video/resolved/
+.pipeline/resolved-profile.json
+.pipeline/resolved-profile.sha256
+
 # Models, media, caches and generated output
 *.ckpt
 *.safetensors
