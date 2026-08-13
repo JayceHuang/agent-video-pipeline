@@ -452,6 +452,28 @@ def main() -> int:
     report_path = report_path if report_path.is_absolute() else project / report_path
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    # The stabilized master replaces the prior file atomically, so its hash in
+    # the voice manifest must move with it. Otherwise the next stability gate
+    # correctly rejects the otherwise-valid result as stale.
+    manifest_path = project / "audio/voice-manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["master_sha256"] = report["output_sha256"]
+        manifest["aligned_stabilization"] = {
+            "status": "pass",
+            "report": str(report_path.relative_to(project)),
+            "report_sha256": sha256(report_path),
+            "output_sha256": report["output_sha256"],
+            "method": report["method"],
+            "application_count": 1,
+        }
+        staged_manifest = manifest_path.with_suffix(".json.tmp")
+        staged_manifest.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        staged_manifest.replace(manifest_path)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 

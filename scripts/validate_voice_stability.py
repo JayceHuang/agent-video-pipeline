@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from profile_config import get_in, load_resolved_profile
+
 import numpy as np
 
 
@@ -248,6 +250,7 @@ def main() -> int:
     parser.add_argument("--report", default="audio/voice-stability-qc.json")
     parser.add_argument("--stage", choices=["raw", "master", "final"], default="master")
     parser.add_argument("--profile", type=Path, default=default_profile)
+    parser.add_argument("--pipeline-profile", type=Path, help="resolved pipeline profile JSON")
     parser.add_argument("--analysis-offset-s", type=float, default=0.0)
     parser.add_argument("--sample-rate", type=int)
     parser.add_argument("--speech-gate-db", type=float)
@@ -265,6 +268,9 @@ def main() -> int:
     args = parser.parse_args()
 
     project = args.project.expanduser().resolve()
+    pipeline_profile, pipeline_profile_path = load_resolved_profile(
+        args.pipeline_profile, project, required=args.pipeline_profile is not None
+    )
     profile_path = args.profile.expanduser().resolve()
     profile = load_profile(profile_path)
     analysis_profile = profile["analysis"]
@@ -359,6 +365,11 @@ def main() -> int:
                 errors.append("voice manifest does not bind the voice-stability profile")
             elif manifest_profile != sha256(profile_path):
                 errors.append("voice manifest voice-stability profile hash is stale")
+            if pipeline_profile:
+                expected_pipeline_sha = get_in(pipeline_profile, "_meta.profile_sha256")
+                recorded_pipeline_sha = voice_manifest.get("pipeline_profile", {}).get("sha256")
+                if recorded_pipeline_sha != expected_pipeline_sha:
+                    errors.append("voice manifest is stale for the resolved pipeline profile")
             if voice_manifest.get("clone_mode") == "voxcpm2_ultimate_cloning":
                 for field in ("prompt", "reference"):
                     row = voice_manifest.get(field, {})
@@ -565,6 +576,11 @@ def main() -> int:
             "path": str(profile_path),
             "sha256": sha256(profile_path),
             "profile_id": profile.get("profile_id"),
+        },
+        "pipeline_profile": {
+            "path": str(pipeline_profile_path) if pipeline_profile_path else None,
+            "sha256": get_in(pipeline_profile, "_meta.profile_sha256") if pipeline_profile else None,
+            "profile_id": pipeline_profile.get("profile_id") if pipeline_profile else None,
         },
         "inputs": {
             "timeline_path": str(timeline_path),

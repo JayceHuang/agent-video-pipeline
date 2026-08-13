@@ -16,22 +16,28 @@ import re
 from pathlib import Path
 from typing import Any
 
+from profile_config import (
+    get_in,
+    load_resolved_profile,
+    resolve_layout_policy,
+    resolve_motion_preset,
+)
+
 
 IGNORED_RE = re.compile(r"[\s，。！？；：、,.!?;:‘’“”（）()—｜·\-]")
-CTA_TEXT = "关注我，给你带来更多AI知识。"
 TIER_RANK = {"low": 0, "medium": 1, "high": 2}
 
 ROLE_PATTERNS: dict[str, re.Pattern[str]] = {
-    "definition": re.compile(r"(?:是什么|指的是|就是|定义|意味着|可以理解为|本质是|称为)"),
-    "process": re.compile(r"(?:步骤|流程|工作流|先.+再|首先|然后|接着|依次|第[一二三四五六七八九十0-9]+步)"),
-    "comparison": re.compile(r"(?:对比|相比|区别|不同|不是.+而是|前者|后者|一边.+另一边|VS|vs\.?|优于|劣于)"),
+    "definition": re.compile(r"(?:是什么|指的是|就是|定义|意味着|可以理解为|本质是|称为|(?i:\bis defined as\b|\brefers to\b|\bmeans\b))"),
+    "process": re.compile(r"(?:步骤|流程|工作流|先.+再|首先|然后|接着|依次|第[一二三四五六七八九十0-9]+步|(?i:\bfirst\b|\bnext\b|\bthen\b|\bworkflow\b|\bprocess\b))"),
+    "comparison": re.compile(r"(?:对比|相比|区别|不同|不是.+而是|前者|后者|一边.+另一边|VS|vs\.?|优于|劣于|(?i:\bhowever\b|\bwhereas\b|\bunlike\b|\bdifference\b))"),
     "metric": re.compile(r"(?:\d+(?:\.\d+)?(?:小时|分钟|秒|天|周|倍|个|条|%|％)?|[零一二两三四五六七八九十百千万]{2,}(?:小时|分钟|秒|天|周|倍|%|％)|(?:两|半)(?:小时|分钟|秒|天|周|倍)|从.+到.+|提升|降低|压到|增长|减少)"),
-    "warning": re.compile(r"(?:不要|不能|避免|警惕|注意|小心|风险|坑|错误|失败|误区|问题在于|别把|别让)"),
-    "demo": re.compile(r"(?:代码|命令|终端|界面|按钮|点击|打开|安装|输入|运行|API|函数|配置|文件|插件)"),
-    "hierarchy": re.compile(r"(?:层级|结构|组成|分类|关系|架构|节点|系统|模块|核心|连接|网络)"),
-    "example": re.compile(r"(?:例如|比如|举个例子|案例|场景|有人|有一种|假设)"),
-    "conclusion": re.compile(r"(?:所以|因此|总之|总结|关键是|本质上|记住|真正的|真正是|最终|结论|才是|才能)"),
-    "hook": re.compile(r"(?:为什么|你有没有|是不是|竟然|真正的问题|越.+越|很多人|大多数人|如果.+会怎样)"),
+    "warning": re.compile(r"(?:不要|不能|避免|警惕|注意|小心|风险|坑|错误|失败|误区|问题在于|别把|别让|(?i:\bdo not\b|\bdon't\b|\bavoid\b|\bwarning\b|\brisk\b|\bfailure\b))"),
+    "demo": re.compile(r"(?:代码|命令|终端|界面|按钮|点击|打开|安装|输入|运行|API|函数|配置|文件|插件|(?i:\bcode\b|\bcommand\b|\bterminal\b|\bclick\b|\binstall\b|\bfile\b|\bplugin\b))"),
+    "hierarchy": re.compile(r"(?:层级|结构|组成|分类|关系|架构|节点|系统|模块|核心|连接|网络|(?i:\bhierarchy\b|\bstructure\b|\barchitecture\b|\bnode\b|\bsystem\b|\bmodule\b))"),
+    "example": re.compile(r"(?:例如|比如|举个例子|案例|场景|有人|有一种|假设|(?i:\bfor example\b|\bfor instance\b|\bcase\b|\bsuppose\b))"),
+    "conclusion": re.compile(r"(?:所以|因此|总之|总结|关键是|本质上|记住|真正的|真正是|最终|结论|才是|才能|(?i:\btherefore\b|\bin summary\b|\bin conclusion\b|\bthe key is\b|\bremember\b))"),
+    "hook": re.compile(r"(?:为什么|你有没有|是不是|竟然|真正的问题|越.+越|很多人|大多数人|如果.+会怎样|(?i:\bwhy\b|\bdid you know\b|\bwhat if\b|\bthe real question\b))"),
 }
 
 
@@ -83,7 +89,9 @@ def load_scenes(data: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return metadata, scenes
 
 
-def classify_scene(scene: dict[str, Any], index: int, total: int) -> tuple[str, str, float]:
+def classify_scene(
+    scene: dict[str, Any], index: int, total: int, cta_text: str
+) -> tuple[str, str, float]:
     explicit = str(scene.get("semantic_role") or scene.get("motion_role") or "").strip()
     if explicit:
         return explicit, "scene explicitly declares semantic_role/motion_role", 1.0
@@ -117,9 +125,9 @@ def classify_scene(scene: dict[str, Any], index: int, total: int) -> tuple[str, 
         scores["hook"] += 2.25 if re.search(r"[？?]|为什么|越.+越", headline) else 1.5
     if index == total - 1:
         scores["conclusion"] += 1.75
-    if CTA_TEXT in text:
-        if effective_chars(text.replace(CTA_TEXT, "")) <= 18:
-            return "cta", "scene is primarily the fixed CTA", 0.98
+    if cta_text and cta_text in text:
+        if effective_chars(text.replace(cta_text, "")) <= 18:
+            return "cta", "scene is primarily the configured CTA", 0.98
         scores["conclusion"] += 0.75
     if re.search(r"[？?]", text):
         scores["hook"] += 0.5 if index == 0 else 0.15
@@ -177,6 +185,100 @@ def fallback_chain(primitive_id: str, primitives: dict[str, Any]) -> list[str]:
     if chain[-1] != "static-step":
         chain.append("static-step")
     return chain
+
+
+def enforce_rolling_density(
+    plans: list[dict[str, Any]], profile: dict[str, Any], catalog: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Deterministically downgrade beats until every 10-second window fits."""
+    limit = float(profile.get("max_rolling_motion_points_10s", 999.0))
+    primitives = catalog["primitives"]
+    costs = catalog["motion_costs"]
+    allowed = {str(item) for item in profile.get("allowed_primitives", [])}
+    degradations: list[dict[str, Any]] = []
+
+    for _ in range(10000):
+        events = [
+            (float(beat["cue_s"]), scene, beat)
+            for scene in plans
+            for beat in scene.get("beats", [])
+            if isinstance(beat, dict)
+        ]
+        if not events:
+            return degradations
+        peak_points = -1.0
+        peak_start = 0.0
+        peak_events: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+        for start in sorted({event[0] for event in events}):
+            window = [event for event in events if start <= event[0] < start + 10.0]
+            points = sum(float(event[2].get("motion_cost", 0.0)) for event in window)
+            if points > peak_points + 1e-9:
+                peak_points, peak_start, peak_events = points, start, window
+        if peak_points <= limit + 1e-9:
+            for scene in plans:
+                scene.setdefault("budget", {})["planned_motion_points"] = round(
+                    sum(float(beat.get("motion_cost", 0.0)) for beat in scene.get("beats", [])),
+                    3,
+                )
+            return degradations
+
+        candidates: list[tuple[tuple[Any, ...], dict[str, Any], dict[str, Any], str, float]] = []
+        importance = {"micro": 0, "support": 1, "primary": 2}
+        for cue, scene, beat in peak_events:
+            current_id = str(beat.get("primitive", ""))
+            current_cost = float(beat.get("motion_cost", 0.0))
+            replacement = None
+            replacement_cost = current_cost
+            for candidate_id in fallback_chain(current_id, primitives)[1:]:
+                if allowed and candidate_id not in allowed:
+                    continue
+                candidate_cost = float(primitive_spec(candidate_id, primitives, costs)["motion_cost"])
+                if candidate_cost < current_cost - 1e-9:
+                    replacement, replacement_cost = candidate_id, candidate_cost
+                    break
+            if replacement is None:
+                continue
+            is_cta = str(scene.get("semantic_role", "")) == "cta"
+            key = (
+                1 if is_cta else 0,
+                importance.get(str(beat.get("priority", "support")), 1),
+                -(current_cost - replacement_cost),
+                -cue,
+                str(beat.get("id", "")),
+            )
+            candidates.append((key, scene, beat, replacement, replacement_cost))
+        if not candidates:
+            raise ValueError(
+                f"cannot satisfy rolling motion budget {limit:g}; no lower-cost fallback remains"
+            )
+        _, scene, beat, replacement, replacement_cost = sorted(candidates, key=lambda item: item[0])[0]
+        old_id = str(beat["primitive"])
+        old_cost = float(beat.get("motion_cost", 0.0))
+        cost_name = str(primitives[replacement].get("cost", "support"))
+        new_priority = "primary" if cost_name in {"primary", "high-salience"} else (
+            "support" if cost_name == "support" else "micro"
+        )
+        beat["primitive"] = replacement
+        beat["motion_cost"] = replacement_cost
+        beat["priority"] = new_priority
+        beat["fallback_chain"] = fallback_chain(replacement, primitives)
+        duration = 0.0 if replacement_cost <= 0 else (0.62 if new_priority == "primary" else (0.42 if new_priority == "support" else 0.28))
+        beat["settle_s"] = round(min(float(scene["end_s"]), float(beat["cue_s"]) + duration), 6)
+        change = {
+            "beat_id": beat.get("id"),
+            "from": old_id,
+            "to": replacement,
+            "reason": "rolling-10s-motion-budget",
+            "window_start_s": round(peak_start, 6),
+            "points_before": round(peak_points, 3),
+            "profile_limit": limit,
+            "cost_reduction": round(old_cost - replacement_cost, 3),
+        }
+        beat["degradation"] = change
+        scene.setdefault("degradations", []).append(change)
+        degradations.append({"scene_id": scene.get("id"), **change})
+
+    raise ValueError("rolling motion budget solver exceeded its deterministic iteration limit")
 
 
 def timeline_map(data: Any) -> tuple[dict[str, dict[str, Any]], int, int]:
@@ -269,7 +371,7 @@ def word_anchor(term: str, words: list[dict[str, Any]], start_char: int = 0) -> 
 
 def semantic_candidates(
     scene: dict[str, Any], segments: list[dict[str, Any]], words: list[dict[str, Any]],
-    start: float, end: float
+    start: float, end: float, cta_text: str
 ) -> list[dict[str, Any]]:
     explicit_visual_beats = scene.get("visual_beats", [])
     if isinstance(explicit_visual_beats, list) and explicit_visual_beats:
@@ -302,7 +404,7 @@ def semantic_candidates(
                 "word_id": word_id,
                 "occurrence": occurrence,
                 "force_visual": True,
-                "force_cta": "关注我" in anchor,
+                "force_cta": bool(cta_text and normalize(cta_text) in normalize(anchor)),
                 "visual": {
                     "title": title,
                     "detail": detail,
@@ -374,10 +476,11 @@ def semantic_candidates(
                 "word_id": word_id,
                 "occurrence": occurrence,
             })
-    if CTA_TEXT in scene["text"]:
-        match = word_anchor("关注我", words, search_cursor) or word_anchor("关注我", words, 0)
+    if cta_text and cta_text in scene["text"]:
+        anchor_term = cta_text[: min(8, len(cta_text))]
+        match = word_anchor(anchor_term, words, search_cursor) or word_anchor(anchor_term, words, 0)
         candidates.append({
-            "anchor": CTA_TEXT,
+            "anchor": cta_text,
             "cue_s": match[0] if match else max(start, end - min(2.4, (end - start) * 0.22)),
             "cue_source": "caption-word" if match else "prosody-proportional",
             "sentence_id": segments[-1].get("id") if segments else None,
@@ -405,36 +508,71 @@ def select_evenly(candidates: list[dict[str, Any]], limit: int) -> list[dict[str
     return sorted((chosen + required)[:limit], key=lambda item: float(item["cue_s"]))
 
 
-def default_safe_boxes() -> list[dict[str, Any]]:
-    return [
-        {"id": "scene-title", "role": "title", "shape": "rect", "x": 96, "y": 64, "width": 1510, "height": 170, "protected": True},
-        {"id": "content-zone", "role": "content", "shape": "rect", "x": 110, "y": 250, "width": 760, "height": 490, "protected": False},
-        {"id": "illustration-zone", "role": "illustration", "shape": "rect", "x": 960, "y": 250, "width": 760, "height": 500, "protected": True},
-        {"id": "caption-zone", "role": "caption", "shape": "rect", "x": 368, "y": 900, "width": 1312, "height": 152, "protected": True},
-        {"id": "avatar-circle", "role": "avatar", "shape": "circle", "x": 42, "y": 752, "diameter": 300, "protected": True},
-    ]
-
-
-def layout_safe_boxes(layout_id: str) -> list[dict[str, Any]]:
-    """Return precomputed layout zones; animation code must not measure DOM at tween time."""
-    zones = {
-        "host-left-board-right": ((110, 300, 360, 440), (540, 260, 1180, 580)),
-        "host-right-board-left": ((1470, 300, 300, 440), (100, 260, 1260, 580)),
-        "host-upper-corner-canvas": ((1480, 250, 250, 360), (100, 260, 1280, 580)),
-        "diagram-full-width": ((300, 250, 950, 430), (1280, 260, 440, 540)),
-        "editorial-offset": ((120, 300, 500, 390), (700, 260, 1020, 560)),
-        "split-evidence": ((1430, 300, 300, 390), (100, 260, 1220, 560)),
-        "top-strip-process": ((1480, 260, 240, 300), (100, 260, 1300, 560)),
-        "card-field-corner-visual": ((1510, 260, 270, 300), (100, 260, 1320, 560)),
+def configured_rect(
+    box_id: str,
+    role: str,
+    value: Any,
+    *,
+    protected: bool,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"layout.safe_boxes.{role} must be an object")
+    return {
+        "id": box_id,
+        "role": role,
+        "shape": "rect",
+        "x": float(value["x"]),
+        "y": float(value["y"]),
+        "width": float(value["width"]),
+        "height": float(value["height"]),
+        "protected": protected,
     }
-    illustration, content = zones.get(layout_id, ((960, 250, 760, 500), (110, 250, 760, 490)))
-    return [
-        {"id": "scene-title", "role": "title", "shape": "rect", "x": 96, "y": 64, "width": 1510, "height": 170, "protected": True},
-        {"id": "content-zone", "role": "content", "shape": "rect", "x": content[0], "y": content[1], "width": content[2], "height": content[3], "protected": False},
-        {"id": "illustration-zone", "role": "illustration", "shape": "rect", "x": illustration[0], "y": illustration[1], "width": illustration[2], "height": illustration[3], "protected": True},
-        {"id": "caption-zone", "role": "caption", "shape": "rect", "x": 368, "y": 900, "width": 1312, "height": 152, "protected": True},
-        {"id": "avatar-circle", "role": "avatar", "shape": "circle", "x": 42, "y": 752, "diameter": 300, "protected": True},
+
+
+def layout_safe_boxes(layout_id: str | None, pipeline_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return profile-defined zones; runtime animation must not measure DOM at tween time."""
+    layout = get_in(pipeline_profile, "layout", {})
+    safe = layout.get("safe_boxes", {}) if isinstance(layout, dict) else {}
+    templates = layout.get("layout_templates", {}) if isinstance(layout, dict) else {}
+    template = templates.get(layout_id, {}) if isinstance(templates, dict) and layout_id else {}
+
+    content_value: Any = safe.get("content")
+    illustration_value: Any = safe.get("illustration")
+    if isinstance(template, dict):
+        content_zone = template.get("content")
+        illustration_zone = template.get("illustration")
+        if isinstance(content_zone, list) and len(content_zone) == 4:
+            content_value = dict(zip(("x", "y", "width", "height"), content_zone))
+        if isinstance(illustration_zone, list) and len(illustration_zone) == 4:
+            illustration_value = dict(zip(("x", "y", "width", "height"), illustration_zone))
+
+    boxes = [
+        configured_rect("scene-title", "title", safe.get("title"), protected=True),
+        configured_rect("content-zone", "content", content_value, protected=False),
+        configured_rect("illustration-zone", "illustration", illustration_value, protected=True),
+        configured_rect("caption-zone", "caption", safe.get("caption"), protected=True),
     ]
+    avatar = layout.get("avatar_safe_zone", {}) if isinstance(layout, dict) else {}
+    if isinstance(avatar, dict) and avatar.get("enabled"):
+        canvas = layout.get("canvas", {})
+        size = float(avatar["size"])
+        y = float(avatar.get("y", float(canvas["height"]) - float(avatar.get("bottom", 0)) - size))
+        shape = str(avatar.get("shape", "circle"))
+        item: dict[str, Any] = {
+            "id": "avatar-safe-zone",
+            "role": "avatar",
+            "shape": shape,
+            "x": float(avatar.get("x", 0)),
+            "y": y,
+            "protected": True,
+        }
+        if shape == "circle":
+            item["diameter"] = size
+        else:
+            item["width"] = float(avatar.get("width", size))
+            item["height"] = float(avatar.get("height", size))
+        boxes.append(item)
+    return boxes
 
 
 def transition_for(role: str, previous_role: str | None, index: int, grammar: list[str]) -> tuple[str, str]:
@@ -481,12 +619,12 @@ def build_scene_plan(
     words: list[dict[str, Any]], visual_assets: Any, profile_id: str, profile: dict[str, Any],
     catalog: dict[str, Any], seed: int, previous_role: str | None, previous_hero: str | None,
     previous_layout: str | None, used_layouts: set[str],
-    sample_rate: int, fps: int
+    sample_rate: int, fps: int, pipeline_profile: dict[str, Any], cta_text: str
 ) -> dict[str, Any]:
     start = float(timing["start_s"])
     end = float(timing["end_s"])
     duration = end - start
-    role, reason, confidence = classify_scene(scene, index, total)
+    role, reason, confidence = classify_scene(scene, index, total, cta_text)
     recipes = catalog["semantic_recipes"]
     if role not in recipes:
         role = "statement"
@@ -495,22 +633,41 @@ def build_scene_plan(
     recipe = recipes[role]
     scene_asset_refs = asset_refs(scene, visual_assets)
     layout_catalog = catalog.get("layout_variants", {})
+    allowed_layout_list = [str(item) for item in profile.get("layout_variants", [])] or list(layout_catalog)
+    allowed_layouts = set(allowed_layout_list)
     layout_choices = [
         str(item) for item in recipe.get("layout_candidates", [])
-        if item in layout_catalog
+        if item in layout_catalog and item in allowed_layouts
         and (not layout_catalog[item].get("requires_asset") or bool(scene_asset_refs))
     ]
     if not layout_choices:
-        layout_choices = ["editorial-offset"]
+        layout_choices = [
+            item for item in allowed_layout_list
+            if item in layout_catalog
+            and (not layout_catalog[item].get("requires_asset") or bool(scene_asset_refs))
+        ]
+    if not layout_choices:
+        raise ValueError(f"{scene['id']}: no Profile-allowed layout is usable for this scene")
     first_layout_index = stable_index(seed, f"{scene['id']}:layout", len(layout_choices))
     rotated_layouts = layout_choices[first_layout_index:] + layout_choices[:first_layout_index]
-    if len(used_layouts) < 3:
-        unused = [item for item in rotated_layouts if item not in used_layouts and item != previous_layout]
+    layout_policy = profile.get("layout_policy", {})
+    layout_policy = layout_policy if isinstance(layout_policy, dict) else {}
+    minimum_distinct = int(layout_policy.get("minimum_distinct_layouts_per_episode", 1))
+    forbid_adjacent = bool(layout_policy.get("forbid_adjacent_repeat", True))
+    if len(used_layouts) < minimum_distinct:
+        unused = [
+            item for item in rotated_layouts
+            if item not in used_layouts and (not forbid_adjacent or item != previous_layout)
+        ]
         layout_id = unused[0] if unused else next(
-            (item for item in rotated_layouts if item != previous_layout), rotated_layouts[0]
+            (item for item in rotated_layouts if not forbid_adjacent or item != previous_layout),
+            rotated_layouts[0],
         )
     else:
-        layout_id = next((item for item in rotated_layouts if item != previous_layout), rotated_layouts[0])
+        layout_id = next(
+            (item for item in rotated_layouts if not forbid_adjacent or item != previous_layout),
+            rotated_layouts[0],
+        )
     layout_spec = layout_catalog[layout_id]
     primitives = catalog["primitives"]
     costs = catalog["motion_costs"]
@@ -549,7 +706,7 @@ def build_scene_plan(
             support_ids.append(candidate)
 
     segments = proportional_segments(scene, prosody, start, end)
-    semantic = semantic_candidates(scene, segments, words, start, end)
+    semantic = semantic_candidates(scene, segments, words, start, end, cta_text)
     candidates = semantic if explicit_visual_beats else select_evenly(semantic, desired_events)
     hero_assigned = False
     beats: list[dict[str, Any]] = []
@@ -559,7 +716,14 @@ def build_scene_plan(
             primitive_id = "accent-rule-draw"
             priority = "micro"
         elif is_cta:
-            primitive_id = "follow-card-arrow-single-ripple"
+            configured_cta_motion = get_in(
+                pipeline_profile, "layout.follow_cta_animation.motion"
+            )
+            primitive_id = (
+                str(configured_cta_motion)
+                if configured_cta_motion in primitives
+                else hero_id
+            )
             priority = "primary"
         elif not hero_assigned:
             primitive_id = hero_id
@@ -608,8 +772,8 @@ def build_scene_plan(
                 "start_s": left["settle_s"],
                 "end_s": right["cue_s"],
                 "semantic_owner": left["id"],
-                "intentional": False,
-                "reason_code": "review-required",
+                "intentional": True,
+                "reason_code": "caption-readability",
             })
 
     grammar = list(profile["transition_grammar"])
@@ -633,7 +797,7 @@ def build_scene_plan(
         "presenter_anchor": layout_spec["presenter_anchor"],
         "layout_selection_reason": f"semantic role={role}; deterministic rotation; previous={previous_layout or 'none'}",
         "blueprint": recipe["blueprint"],
-        "safe_boxes": layout_safe_boxes(layout_id),
+        "safe_boxes": layout_safe_boxes(layout_id, pipeline_profile),
         "asset_refs": scene_asset_refs,
         "hero_motion": primitive_spec(hero_id, primitives, costs),
         "supporting_motions": [primitive_spec(item, primitives, costs) for item in support_ids],
@@ -662,10 +826,11 @@ def main() -> int:
     parser.add_argument("--scenes", type=Path, required=True)
     parser.add_argument("--timeline", type=Path, required=True)
     parser.add_argument("--prosody", type=Path, required=True)
-    parser.add_argument("--visual-assets", type=Path, required=True)
+    parser.add_argument("--visual-assets", type=Path)
     parser.add_argument("--caption-words", type=Path)
     parser.add_argument("--catalog", type=Path)
-    parser.add_argument("--profile", default="basic-stable")
+    parser.add_argument("--profile", help="motion preset; defaults to resolved profile")
+    parser.add_argument("--resolved-profile", type=Path, required=True)
     parser.add_argument(
         "--runtime-audit",
         type=Path,
@@ -676,13 +841,22 @@ def main() -> int:
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
+    pipeline_profile, resolved_profile_path = load_resolved_profile(
+        args.resolved_profile, None, required=True
+    )
+    motion_profile_id = str(
+        args.profile or get_in(pipeline_profile, "motion.default_profile", "basic-stable")
+    )
+    cta_text = str(get_in(pipeline_profile, "episode.final_cta", "") or "").strip()
     catalog_path = (args.catalog or script_dir.parent / "references/motion-catalog.json").expanduser().resolve()
     paths = {
         "scenes": args.scenes.expanduser().resolve(),
         "timeline": args.timeline.expanduser().resolve(),
         "prosody": args.prosody.expanduser().resolve(),
-        "visual_assets": args.visual_assets.expanduser().resolve(),
+        "resolved_profile": resolved_profile_path,
     }
+    if args.visual_assets:
+        paths["visual_assets"] = args.visual_assets.expanduser().resolve()
     if args.caption_words:
         paths["caption_words"] = args.caption_words.expanduser().resolve()
     for name, path in {**paths, "catalog": catalog_path}.items():
@@ -690,15 +864,19 @@ def main() -> int:
             raise FileNotFoundError(f"missing {name}: {path}")
 
     catalog = load_json(catalog_path)
-    if args.profile not in catalog.get("profiles", {}):
-        raise ValueError(f"unknown motion profile: {args.profile}")
-    profile = catalog["profiles"][args.profile]
-    advanced_profile = args.profile in {"premium-balanced", "cinematic"}
+    if motion_profile_id not in catalog.get("profiles", {}):
+        raise ValueError(f"unknown motion profile: {motion_profile_id}")
+    selectable = get_in(pipeline_profile, "motion.selectable_profiles", [])
+    if isinstance(selectable, list) and selectable and motion_profile_id not in selectable:
+        raise ValueError(f"motion preset is not enabled by resolved profile: {motion_profile_id}")
+    profile = resolve_motion_preset(catalog, pipeline_profile, motion_profile_id)
+    layout_policy = resolve_layout_policy(catalog, pipeline_profile)
+    advanced_profile = motion_profile_id in {"premium-balanced", "cinematic"}
     runtime_audit: dict[str, Any] | None = None
     if advanced_profile:
         if not args.runtime_audit:
             raise ValueError(
-                f"{args.profile} requires --runtime-audit from an explicit runtime implementation audit"
+                f"{motion_profile_id} requires --runtime-audit from an explicit runtime implementation audit"
             )
         audit_path = args.runtime_audit.expanduser().resolve()
         if not audit_path.is_file():
@@ -706,7 +884,7 @@ def main() -> int:
         runtime_audit = load_json(audit_path)
         if not isinstance(runtime_audit, dict):
             raise ValueError("runtime audit must be a JSON object")
-        if runtime_audit.get("status") != "pass" or runtime_audit.get("profile_id") != args.profile:
+        if runtime_audit.get("status") != "pass" or runtime_audit.get("profile_id") != motion_profile_id:
             raise ValueError("runtime audit must pass and match the requested advanced profile")
         implemented = runtime_audit.get("implemented_primitives")
         if not isinstance(implemented, list) or not implemented:
@@ -714,9 +892,14 @@ def main() -> int:
         paths["runtime_audit"] = audit_path
     scene_metadata, scenes = load_scenes(load_json(paths["scenes"]))
     timings, sample_rate, fps_from_timeline = timeline_map(load_json(paths["timeline"]))
-    fps = int(scene_metadata.get("fps", fps_from_timeline or 30))
+    configured_fps = int(get_in(pipeline_profile, "layout.canvas.fps", fps_from_timeline or 30))
+    fps = int(scene_metadata.get("fps", configured_fps))
     prosodies = prosody_map(load_json(paths["prosody"]))
-    visual_assets = load_json(paths["visual_assets"])
+    visual_assets = (
+        load_json(paths["visual_assets"])
+        if "visual_assets" in paths
+        else {"status": "disabled", "shot_list": [], "assets": []}
+    )
     word_data = load_json(paths["caption_words"]) if "caption_words" in paths else None
     word_groups = words_map(word_data)
 
@@ -734,15 +917,17 @@ def main() -> int:
     for index, scene in enumerate(scenes):
         plan = build_scene_plan(
             scene, index, len(scenes), timings[scene["id"]], prosodies[scene["id"]],
-            word_groups.get(scene["id"], []), visual_assets, args.profile, profile,
+            word_groups.get(scene["id"], []), visual_assets, motion_profile_id, profile,
             catalog, args.seed, previous_role, previous_hero, previous_layout, used_layouts,
-            sample_rate, fps,
+            sample_rate, fps, pipeline_profile, cta_text,
         )
         plans.append(plan)
         previous_role = str(plan["semantic_role"])
         previous_hero = str(plan["hero_motion"]["id"])
         previous_layout = str(plan["layout_variant"])
         used_layouts.add(previous_layout)
+
+    density_degradations = enforce_rolling_density(plans, profile, catalog)
 
     if runtime_audit is not None:
         implemented = {str(item) for item in runtime_audit["implemented_primitives"]}
@@ -772,19 +957,26 @@ def main() -> int:
             "sha256": file_sha256(Path(__file__).resolve()),
         },
         "profile": {
-            "id": args.profile,
+            "id": motion_profile_id,
             "catalog_path": str(catalog_path),
             "catalog_sha256": file_sha256(catalog_path),
             "description": profile["description"],
             "budgets": profile,
+            "layout_policy": layout_policy,
             "runtime_audit_required": advanced_profile,
+        },
+        "configuration": {
+            "id": pipeline_profile.get("profile_id"),
+            "path": str(resolved_profile_path),
+            "sha256": get_in(pipeline_profile, "_meta.profile_sha256"),
         },
         "seed": args.seed,
         "sources": source_manifest,
         "clock": {"sample_rate": sample_rate, "fps": fps, "rounding": "nearest-frame"},
         "transition_grammar": profile["transition_grammar"],
-        "global_safe_zones": default_safe_boxes(),
+        "global_safe_zones": layout_safe_boxes(None, pipeline_profile),
         "scenes": plans,
+        "degradations": density_degradations,
         "review": {
             "required": True,
             "approved_by": None,
@@ -797,7 +989,7 @@ def main() -> int:
     target = args.output.expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"output": str(target), "status": "draft", "profile": args.profile, "scenes": len(plans)}, ensure_ascii=False))
+    print(json.dumps({"output": str(target), "status": "draft", "profile": motion_profile_id, "scenes": len(plans)}, ensure_ascii=False))
     return 0
 
 

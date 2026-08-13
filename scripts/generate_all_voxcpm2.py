@@ -14,24 +14,13 @@ import numpy as np
 import soundfile as sf
 from voxcpm import VoxCPM
 
+from profile_config import get_in, load_resolved_profile
+
 
 ROOT = Path(__file__).resolve().parent  # <skill>/scripts
 CONTINUOUS_GENERATOR = ROOT / "generate_voxcpm2_continuous.py"
 EPISODE_VALIDATOR = ROOT / "validate_episode_independence.py"
 BOUNDARY_STABILIZER = ROOT / "stabilize_audio_boundaries.py"
-DEFAULT_PROFILE_YAML = ROOT.parent / "references/default-profile.yaml"
-
-
-def _runtime_default(key: str, fallback: str) -> Path:
-    """Read tts_runtime defaults from references/default-profile.yaml without PyYAML."""
-    try:
-        text = DEFAULT_PROFILE_YAML.read_text(encoding="utf-8")
-        match = re.search(rf"^\s*{key}:\s*\"?([^\"\n]+)\"?\s*$", text, re.MULTILINE)
-        if match:
-            return Path(match.group(1).strip()).expanduser()
-    except OSError:
-        pass
-    return Path(fallback).expanduser()
 
 
 def resolve_project(explicit, series: dict, series_path: Path, ep: str) -> Path:
@@ -47,11 +36,10 @@ def resolve_project(explicit, series: dict, series_path: Path, ep: str) -> Path:
     return (series_path.parent / template.format(ep=ep)).resolve()
 
 
-MODEL = _runtime_default("model_path", "/Users/jaycehuang/.cache/voxcpm2-local/models/VoxCPM2")
-DEFAULT_ALIGNER_PYTHON = _runtime_default(
-    "aligner_python",
-    "/Users/jaycehuang/obsidian-proj/videos/obsidian-beginner-horizontal-synced/.venv-audio/bin/python",
-)
+MODEL: Path | None = None
+DEFAULT_ALIGNER_PYTHON: Path | None = None
+RESOLVED_PROFILE_PATH: Path | None = None
+PIPELINE_PROFILE: dict = {}
 SERIES: dict = {}
 SERIES_PATH: Path | None = None
 REFERENCE_SOURCE: Path | None = None
@@ -69,10 +57,7 @@ MASTER_STABILITY_FILTER = (
     "acompressor=threshold=-24dB:ratio=1.6:attack=20:release=180:makeup=1.5:mix=1,"
     "loudnorm=I=-16:TP=-2:LRA=5:linear=true"
 )
-FIXED_TONE_STYLE = (
-    "全程只使用一种平静、自然、克制的中性讲解语气。保持稳定中音区、稳定音量、稳定气息和稳定节奏；"
-    "语速略慢、不要赶读，每个标点保留自然停顿，关键词只做轻微重读。整段禁止切换情绪、音高、速度、重音强度或结尾收束方式。"
-)
+FIXED_TONE_STYLE = ""
 
 
 def scenes_with_ending_cta(episode: dict) -> list[dict]:
@@ -96,12 +81,21 @@ def validate_episode_independence() -> None:
     if not EPISODE_VALIDATOR.is_file():
         raise FileNotFoundError(f"episode independence validator not found: {EPISODE_VALIDATOR}")
     subprocess.run(
-        [sys.executable, str(EPISODE_VALIDATOR), "--series", str(SERIES_PATH)],
+        [
+            sys.executable,
+            str(EPISODE_VALIDATOR),
+            "--series",
+            str(SERIES_PATH),
+            "--profile",
+            str(RESOLVED_PROFILE_PATH),
+        ],
         check=True,
     )
 
 
 def ensure_reference_audio() -> None:
+    if REFERENCE_SOURCE is None or REFERENCE is None or not REFERENCE_EXTRACT:
+        raise ValueError("voice reference settings are required for legacy-scene generation")
     if not REFERENCE_SOURCE.is_file():
         raise FileNotFoundError(f"voice reference source not found: {REFERENCE_SOURCE}")
     refresh = not REFERENCE.is_file() or REFERENCE_SOURCE.stat().st_mtime_ns > REFERENCE.stat().st_mtime_ns
@@ -162,8 +156,14 @@ def load_approved_prosody(project: Path) -> dict[str, dict]:
 
 def allowed_cpm_range(target_cpm: float, stability_mode: str) -> list[float]:
     """Return the acceptance band; explicit fast trials use a soft target."""
-    if target_cpm <= 300:
-        return [290.0, 300.0]
+    nominal = float(get_in(PIPELINE_PROFILE, "voice.target_effective_chinese_chars_per_minute", target_cpm))
+    configured = get_in(PIPELINE_PROFILE, "voice.allowed_range", [target_cpm - 10, target_cpm + 10])
+    if abs(target_cpm - nominal) < 1e-6:
+        return [float(configured[0]), float(configured[1])]
+    fast = get_in(PIPELINE_PROFILE, "voice.fast_trial", {})
+    if isinstance(fast, dict) and abs(target_cpm - float(fast.get("nominal_target_effective_chinese_chars_per_minute", -1))) < 1e-6:
+        allowed = fast.get("allowed_range", [target_cpm - 10, target_cpm + 10])
+        return [float(allowed[0]), float(allowed[1])]
     if stability_mode == "stable":
         return [target_cpm - STABLE_TARGET_TOLERANCE_CPM, target_cpm + STABLE_TARGET_TOLERANCE_CPM]
     return [target_cpm - 5.0, target_cpm + 5.0]
@@ -218,8 +218,9 @@ def main() -> None:
     )
     parser.add_argument("--series", type=Path, required=True)
     parser.add_argument("--project", type=Path, help="Explicit episode project directory for production mode")
-    parser.add_argument("--model", type=Path, default=MODEL)
-    parser.add_argument("--aligner-python", type=Path, default=DEFAULT_ALIGNER_PYTHON)
+    parser.add_argument("--model", type=Path)
+    parser.add_argument("--aligner-python", type=Path)
+    parser.add_argument("--profile", type=Path, help="resolved profile JSON")
     parser.add_argument("--candidate-count", type=int, default=3)
     parser.add_argument(
         "--fixed-candidate-batch",
@@ -266,17 +267,53 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    global SERIES, SERIES_PATH, REFERENCE_SOURCE, REFERENCE, REFERENCE_EXTRACT, TARGET_CPM, ENDING_CTA
+    global SERIES, SERIES_PATH, REFERENCE_SOURCE, REFERENCE, REFERENCE_EXTRACT
+    global TARGET_CPM, ENDING_CTA, MODEL, DEFAULT_ALIGNER_PYTHON
+    global RESOLVED_PROFILE_PATH, PIPELINE_PROFILE, FIXED_TONE_STYLE
     SERIES_PATH = args.series.expanduser().resolve()
     if not SERIES_PATH.is_file():
         raise FileNotFoundError(f"series file not found: {SERIES_PATH}")
     SERIES = json.loads(SERIES_PATH.read_text(encoding="utf-8"))
-    TARGET_CPM = int(SERIES["target_effective_chars_per_minute"])
-    ENDING_CTA = str(SERIES.get("ending_cta", "")).strip()
+    profile_project: Path | None = None
+    if args.episode is not None:
+        profile_project = resolve_project(
+            args.project, SERIES, SERIES_PATH, str(args.episode).zfill(2)
+        )
+    PIPELINE_PROFILE, RESOLVED_PROFILE_PATH = load_resolved_profile(
+        args.profile, profile_project, required=True
+    )
+    TARGET_CPM = int(
+        SERIES.get(
+            "target_effective_chars_per_minute",
+            get_in(PIPELINE_PROFILE, "voice.target_effective_chinese_chars_per_minute"),
+        )
+    )
+    ENDING_CTA = str(
+        SERIES.get("ending_cta", get_in(PIPELINE_PROFILE, "episode.final_cta", "")) or ""
+    ).strip()
+    FIXED_TONE_STYLE = str(get_in(PIPELINE_PROFILE, "voice.style_instruction", "") or "").strip()
+    if not FIXED_TONE_STYLE:
+        raise ValueError("voice.style_instruction must come from the resolved profile")
+    model_value = args.model or get_in(PIPELINE_PROFILE, "tts_runtime.model_path")
+    aligner_value = args.aligner_python or get_in(PIPELINE_PROFILE, "tts_runtime.aligner_python")
+    if not model_value or not aligner_value:
+        raise ValueError("VoxCPM2 model and aligner Python must come from CLI or resolved profile")
+    MODEL = Path(str(model_value)).expanduser().absolute()
+    DEFAULT_ALIGNER_PYTHON = Path(str(aligner_value)).expanduser().absolute()
+    args.model = MODEL
+    args.aligner_python = DEFAULT_ALIGNER_PYTHON
     if "voice_reference_source" in SERIES:
         REFERENCE_SOURCE = Path(SERIES["voice_reference_source"])
         REFERENCE = Path(SERIES["voice_reference_wav"])
         REFERENCE_EXTRACT = dict(SERIES["voice_reference_extract"])
+    else:
+        source_value = get_in(PIPELINE_PROFILE, "voice.voice_reference_source")
+        reference_value = get_in(PIPELINE_PROFILE, "voice.voice_reference_wav")
+        extract_value = get_in(PIPELINE_PROFILE, "voice.voice_reference_extract")
+        if source_value and reference_value and isinstance(extract_value, dict):
+            REFERENCE_SOURCE = Path(str(source_value)).expanduser().absolute()
+            REFERENCE = Path(str(reference_value)).expanduser().absolute()
+            REFERENCE_EXTRACT = dict(extract_value)
 
     if args.mode == "episode-take":
         if args.episode is None:
@@ -302,6 +339,8 @@ def main() -> None:
             str(args.candidate_count),
             "--seed-offset",
             str(args.seed_offset),
+            "--profile",
+            str(RESOLVED_PROFILE_PATH),
         ]
         if args.target_cpm is not None:
             command.extend(["--target-cpm", str(args.target_cpm)])
@@ -502,6 +541,11 @@ def main() -> None:
         (project / "audio/timeline.json").write_text(json.dumps(timeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         manifest = {
             "engine": "VoxCPM2",
+            "pipeline_profile": {
+                "path": str(RESOLVED_PROFILE_PATH),
+                "id": PIPELINE_PROFILE.get("profile_id"),
+                "sha256": get_in(PIPELINE_PROFILE, "_meta.profile_sha256"),
+            },
             "model_path": str(MODEL),
             "reference_source_path": str(REFERENCE_SOURCE),
             "reference_source_sha256": sha256(REFERENCE_SOURCE),

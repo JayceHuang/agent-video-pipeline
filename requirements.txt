@@ -1,2 +1,3 @@
 numpy>=1.26,<3
 soundfile>=0.12,<1
+PyYAML>=6.0,<7

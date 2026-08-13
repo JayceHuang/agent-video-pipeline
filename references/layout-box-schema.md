@@ -1,28 +1,30 @@
 # 动态布局盒契约
 
-Storyboard 完成后、HyperFrames render 前，把实际实现中的关键元素写入 `.hyperframes/layout-boxes.json`。这份文件验证实际布局，不是 motion plan 中的建议区域。
+Storyboard 完成后、渲染前，把实际 DOM 的关键元素写入 `.hyperframes/layout-boxes.json`。画布和 protected zones 必须来自同一 resolved Profile。
 
 ```json
 {
   "schema_version": 1,
   "status": "approved",
-  "canvas": {"width": 1920, "height": 1080},
+  "canvas": {"width": 1280, "height": 720},
+  "profile": {"id": "standard", "sha256": "..."},
   "motion_plan": {"path": ".hyperframes/semantic-motion.json", "sha256": "..."},
+  "actual_dom_verified": true,
   "scenes": [{
-    "id": "01-hook",
-    "start_s": 1.0,
-    "end_s": 9.2,
+    "id": "scene-01",
+    "start_s": 0.0,
+    "end_s": 8.0,
     "elements": [{
       "id": "hero-media",
       "role": "illustration",
       "shape": "rect",
-      "x": 960,
-      "y": 250,
-      "width": 760,
-      "height": 500,
-      "swept_bbox": {"x": 942, "y": 238, "width": 790, "height": 524},
-      "start_s": 1.3,
-      "end_s": 9.2,
+      "x": 640,
+      "y": 160,
+      "width": 500,
+      "height": 360,
+      "swept_bbox": {"x": 620, "y": 150, "width": 530, "height": 380},
+      "start_s": 0.4,
+      "end_s": 8.0,
       "protected": true,
       "animated": true,
       "z_index": 20,
@@ -34,12 +36,11 @@ Storyboard 完成后、HyperFrames render 前，把实际实现中的关键元�
 
 规则：
 
-- 坐标以最终 1920×1080 画布为准，`y` 从顶部开始。
-- 动画元素必须写 `swept_bbox`，它是整个运动路径的包围盒；只写起点和终点不合格。
-- 每个语义 beat 必须有一个实际 DOM 元素记录：`role=beat`、`semantic_beat_id=<motion beat id>`、`animated=true`，且 `start_s/end_s` 覆盖该 beat 的 `cue_s`。计划了但没有进入 DOM 的 beat 必须失败，不能只留在 motion plan/QC 中。
-- 每场必须包含 title、content、caption、avatar；使用插图时还要包含 illustration，以及脸、手和动作的子保护盒。
-- avatar 固定为 `x=42, y=752, diameter=300`；caption 默认 `x>=368`。
-- 两个 protected element 在相同时间内相交即失败，除非两者具有相同且非空的 `intentional_composite_id`。
-- background 不参与遮挡；transition 可以覆盖画面，但 `z_index` 必须低于 caption。
-- 人物 face、hand、action 与父 illustration 可使用同一个 composite id；标题、卡片或其他图片不能复用该 id 绕过门禁。
-- scene ID/order、时间范围和 motion plan SHA 必须匹配当前计划。更新布局或 motion plan 后必须重跑 `scripts/validate_layout_boxes.py`。
+- 坐标以 resolved Profile 的最终画布为准，`y` 从顶部开始。
+- 动画元素必须写完整运动路径的 `swept_bbox`。
+- 每个 semantic beat 必须对应实际 DOM 元素，并让活动时间覆盖 `cue_s`。
+- title、content、caption 始终必备；插图和数字人角色只在 Profile/场景启用时必备。
+- 数字人形状、坐标和尺寸以及字幕最小 x 都从 Profile 读取。
+- protected elements 同时相交即失败，合法组合必须共享显式 `intentional_composite_id`。
+- background 不参与遮挡；transition 的层级必须低于 caption。
+- scene 顺序、时间、motion plan SHA 和 Profile SHA 必须保持新鲜。

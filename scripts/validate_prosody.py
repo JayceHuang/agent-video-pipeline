@@ -7,6 +7,8 @@ import argparse
 import json
 from pathlib import Path
 
+from profile_config import get_in, load_resolved_profile
+
 
 EMOTIONS = {"calm", "curious", "warning", "excited", "warm"}
 PITCHES = {"stable", "slightly-up", "slightly-down"}
@@ -29,9 +31,11 @@ def main() -> int:
     parser.add_argument("--prosody", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--require-approved", action="store_true")
+    parser.add_argument("--profile", type=Path, help="resolved profile JSON")
     args = parser.parse_args()
 
     data = json.loads(args.prosody.expanduser().resolve().read_text(encoding="utf-8"))
+    profile, profile_path = load_resolved_profile(args.profile, None, required=args.profile is not None)
     errors: list[str] = []
     warnings: list[str] = []
     if data.get("schema_version") != 2:
@@ -48,6 +52,7 @@ def main() -> int:
     if rules.get("control_tags_in_tts_text") is not False:
         errors.append("rules.control_tags_in_tts_text must be false")
     baseline = data.get("acoustic_baseline", {})
+    configured_baseline = get_in(profile, "voice.acoustic_baseline", {})
     for field in (
         "register",
         "vocal_effort",
@@ -58,6 +63,17 @@ def main() -> int:
     ):
         if not str(baseline.get(field, "")).strip():
             errors.append(f"acoustic_baseline.{field} is required")
+        elif isinstance(configured_baseline, dict) and configured_baseline.get(field) is not None:
+            if baseline.get(field) != configured_baseline.get(field):
+                errors.append(f"acoustic_baseline.{field} differs from resolved profile")
+
+    if profile:
+        declared_profile_sha = data.get("profile", {}).get("sha256")
+        if declared_profile_sha != get_in(profile, "_meta.profile_sha256"):
+            errors.append("prosody document is stale for the resolved profile")
+
+    rate_range = get_in(profile, "voice.rate_range", [0.98, 1.02])
+    max_strength = int(get_in(profile, "voice.max_emotion_strength", 2))
 
     scenes = data.get("scenes")
     if not isinstance(scenes, list) or not scenes:
@@ -94,10 +110,10 @@ def main() -> int:
                 continue
             if not 0.05 <= pause <= 0.5:
                 errors.append(f"{prefix}: pause_after_s outside 0.05–0.50")
-            if not 0.98 <= rate <= 1.02:
-                errors.append(f"{prefix}: rate outside semantic micro range 0.98–1.02")
-            if not 1 <= strength <= 2:
-                errors.append(f"{prefix}: emotion_strength outside bounded range 1–2")
+            if not float(rate_range[0]) <= rate <= float(rate_range[1]):
+                errors.append(f"{prefix}: rate outside configured range {rate_range}")
+            if not 1 <= strength <= max_strength:
+                errors.append(f"{prefix}: emotion_strength outside configured range 1–{max_strength}")
             if segment.get("stress") == "strong" and segment.get("intentional_emphasis") is not True:
                 errors.append(f"{prefix}: strong stress requires intentional_emphasis=true")
             if previous_energy is not None and abs(strength - previous_energy) > 1:
@@ -112,6 +128,11 @@ def main() -> int:
         "scenes": scene_reports,
         "warnings": warnings,
         "errors": errors,
+        "profile": {
+            "path": str(profile_path) if profile_path else None,
+            "id": profile.get("profile_id") if profile else None,
+            "sha256": get_in(profile, "_meta.profile_sha256") if profile else None,
+        },
     }
     payload = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:

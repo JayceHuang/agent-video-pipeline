@@ -7,9 +7,10 @@ Stages:
   final  -> final video output QC
   all    -> audio + motion + final (final is skipped when no render exists)
 
-Stops at the first failing gate unless --keep-going is passed, prints a JSON
-summary, and exits non-zero on any failure. This replaces hand-typing each
-validator command and forgetting one.
+Stops at the first failing or missing required gate unless --keep-going is
+passed, prints a JSON summary, and exits non-zero on any failure. In `all`
+mode only the not-yet-rendered final video may be skipped. This replaces
+hand-typing each validator command and forgetting one.
 """
 from __future__ import annotations
 
@@ -20,18 +21,33 @@ import sys
 import time
 from pathlib import Path
 
+from profile_config import resolved_profile_path
+
 LOGIC_VERSION = 1
 
 SCRIPTS = Path(__file__).resolve().parent
 
 
-def gate_commands(project: Path, stage: str, render_dir: Path) -> list[tuple[str, list[str], Path | None]]:
+def gate_commands(
+    project: Path,
+    stage: str,
+    render_dir: Path,
+    profile_path: Path,
+) -> list[tuple[str, list[str], Path | None]]:
     """(name, argv, required_input) — gate is skipped when required_input is missing."""
     py = sys.executable
     audio = [
         (
             "prosody",
-            [py, str(SCRIPTS / "validate_prosody.py"), "--prosody", str(project / "audio/prosody.json"), "--require-approved"],
+            [
+                py,
+                str(SCRIPTS / "validate_prosody.py"),
+                "--prosody",
+                str(project / "audio/prosody.json"),
+                "--require-approved",
+                "--profile",
+                str(profile_path),
+            ],
             project / "audio/prosody.json",
         ),
         (
@@ -41,20 +57,34 @@ def gate_commands(project: Path, stage: str, render_dir: Path) -> list[tuple[str
         ),
         (
             "voice_stability",
-            [py, str(SCRIPTS / "validate_voice_stability.py"), "--project", str(project)],
+            [
+                py,
+                str(SCRIPTS / "validate_voice_stability.py"),
+                "--project",
+                str(project),
+                "--pipeline-profile",
+                str(profile_path),
+            ],
             project / "audio/output/narration_master.wav",
         ),
         (
             "scene_pacing",
-            [py, str(SCRIPTS / "validate_scene_pacing.py"), "--timeline", str(project / "audio/timeline.json")],
+            [
+                py,
+                str(SCRIPTS / "validate_scene_pacing.py"),
+                "--timeline",
+                str(project / "audio/timeline.json"),
+                "--profile",
+                str(profile_path),
+            ],
             project / "audio/timeline.json",
         ),
     ]
     motion = [
         (
             "visual_assets",
-            [py, str(SCRIPTS / "validate_visual_assets.py"), "--project", str(project)],
-            project / "visual-assets.json",
+            [py, str(SCRIPTS / "validate_visual_assets.py"), "--project", str(project), "--profile", str(profile_path)],
+            None,
         ),
         (
             "semantic_motion",
@@ -63,6 +93,7 @@ def gate_commands(project: Path, stage: str, render_dir: Path) -> list[tuple[str
                 "--plan", str(project / ".hyperframes/semantic-motion.json"),
                 "--require-approved",
                 "--report", str(project / ".hyperframes/motion-qc.json"),
+                "--resolved-profile", str(profile_path),
             ],
             project / ".hyperframes/semantic-motion.json",
         ),
@@ -74,19 +105,27 @@ def gate_commands(project: Path, stage: str, render_dir: Path) -> list[tuple[str
                 "--motion-plan", str(project / ".hyperframes/semantic-motion.json"),
                 "--require-approved",
                 "--report", str(project / ".hyperframes/layout-qc.json"),
+                "--profile", str(profile_path),
             ],
             project / ".hyperframes/layout-boxes.json",
         ),
         (
             "av_alignment",
-            [py, str(SCRIPTS / "validate_av_alignment.py"), "--project", str(project)],
+            [
+                py,
+                str(SCRIPTS / "validate_av_alignment.py"),
+                "--project",
+                str(project),
+                "--profile",
+                str(profile_path),
+            ],
             project / ".hyperframes/semantic-motion.json",
         ),
     ]
     final = [
         (
             "video_output",
-            [py, str(SCRIPTS / "validate_video_output.py"), "--dir", str(render_dir)],
+            [py, str(SCRIPTS / "validate_video_output.py"), "--dir", str(render_dir), "--profile", str(profile_path)],
             render_dir / "final.mp4",
         ),
     ]
@@ -104,19 +143,27 @@ def main() -> int:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--stage", choices=["audio", "motion", "final", "all"], default="all")
     parser.add_argument("--render-dir", type=Path, default=None, help="defaults to <project>/renders")
+    parser.add_argument("--profile", type=Path, help="resolved profile JSON; defaults to <project>/.pipeline")
     parser.add_argument("--keep-going", action="store_true", help="run remaining gates after a failure")
     parser.add_argument("--report", type=Path, default=None, help="defaults to <project>/.pipeline/gates-report.json")
     args = parser.parse_args()
 
     project = args.project.expanduser().resolve()
     render_dir = (args.render_dir or project / "renders").expanduser().resolve()
+    profile_path = resolved_profile_path(args.profile, project, required=True)
     results = []
     failed = False
 
-    for name, argv, required in gate_commands(project, args.stage, render_dir):
+    for name, argv, required in gate_commands(project, args.stage, render_dir, profile_path):
         if required is not None and not required.is_file():
-            results.append({"gate": name, "status": "skipped", "reason": f"missing input: {required}"})
-            print(f"[skip] {name}: missing {required}")
+            allow_skip = args.stage == "all" and name == "video_output"
+            status = "skipped" if allow_skip else "fail"
+            results.append({"gate": name, "status": status, "reason": f"missing input: {required}"})
+            print(f"[{'skip' if allow_skip else 'FAIL'}] {name}: missing {required}")
+            if not allow_skip:
+                failed = True
+                if not args.keep_going:
+                    break
             continue
         started = time.monotonic()
         proc = subprocess.run(argv, capture_output=True, text=True)
@@ -143,6 +190,7 @@ def main() -> int:
         "logic_version": LOGIC_VERSION,
         "project": str(project),
         "stage": args.stage,
+        "profile": str(profile_path),
         "status": "fail" if failed else ("pass" if ran_any else "all_skipped"),
         "gates": results,
     }
@@ -154,7 +202,10 @@ def main() -> int:
     if failed:
         for row in results:
             if row.get("status") == "fail":
-                sys.stderr.write(f"\n--- {row['gate']} output ---\n{row['stdout_tail']}\n{row['stderr_tail']}\n")
+                details = row.get("reason") or "\n".join(
+                    part for part in (row.get("stdout_tail", ""), row.get("stderr_tail", "")) if part
+                )
+                sys.stderr.write(f"\n--- {row['gate']} output ---\n{details}\n")
     return 1 if failed else 0
 
 

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-video-profile.schema.json",
+  "title": "Agent video resolved profile",
+  "description": "通用默认值、个人 Profile、本机 runtime 与项目覆盖合并后的冻结配置。",
+  "type": "object",
+  "required": ["profile_version", "profile_id", "voice", "motion", "layout", "episode"],
+  "properties": {
+    "profile_version": {"type": "integer", "minimum": 1, "description": "配置契约版本，不是内容版本号。"},
+    "profile_id": {"type": "string", "minLength": 1, "description": "个人或项目 Profile 的稳定标识。"},
+    "content": {"type": "object", "description": "语言、目标受众与内容口吻。"},
+    "production_fast_path": {"type": "object", "description": "高成本阶段的缓存、候选与重试策略。"},
+    "pipeline_runtime": {
+      "type": "object",
+      "description": "运行通用控制脚本的本机环境；实际路径由 runtime.local.yaml 注入。",
+      "properties": {
+        "python": {"type": ["string", "null"], "description": "已安装流水线 requirements 的 Python 虚拟环境入口。"}
+      }
+    },
+    "tts_runtime": {
+      "type": "object",
+      "description": "声音生成、模型与强制对齐所需的本机运行入口。",
+      "properties": {
+        "generator_python": {"type": ["string", "null"], "description": "加载本地 TTS provider 的 Python 环境入口。"},
+        "model_path": {"type": ["string", "null"], "description": "本地声音模型目录。"},
+        "aligner_python": {"type": ["string", "null"], "description": "运行 forced alignment 的 Python 环境入口。"},
+        "generator": {"type": ["string", "null"], "description": "相对 Skill 根目录或绝对路径的声音生成 adapter。"},
+        "continuous_engine": {"type": ["string", "null"], "description": "连续整集声音生成实现。"},
+        "aligner": {"type": ["string", "null"], "description": "字幕强制对齐 adapter。"}
+      }
+    },
+    "voice": {"type": "object", "description": "声音风格、语速、素材与音频质量策略。"},
+    "motion": {"type": "object", "description": "语义动效 preset、预算、布局策略与确定性规则。"},
+    "layout": {"type": "object", "description": "画布、安全区、插图与数字人预留区域。"},
+    "images": {"type": "object", "description": "视觉资产复用和重新生成策略。"},
+    "episode": {"type": "object", "description": "单集独立性、CTA 与时长限制。"},
+    "publishing": {"type": "object", "description": "平台、封面、标签、文案和命名模板。"},
+    "delivery": {"type": "object", "description": "外部交付根目录与时区。"},
+    "avatar": {"type": "object", "description": "数字人合成的音频和遮罩参数。"},
+    "_meta": {"type": "object", "description": "解析器生成的 SHA 与来源记录；禁止手工编辑。"}
+  },
+  "additionalProperties": false
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate that every generated episode is self-contained and teaser-free."""
+"""Validate that every generated episode is self-contained and follows teaser policy."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+
+from profile_config import get_in, load_mapping
 
 
 TEASER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -36,9 +38,6 @@ TEASER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("后续再讲", re.compile(r"后续(?:再)?讲")),
     ("后面再讲", re.compile(r"后面(?:再)?讲")),
 )
-DEFAULT_CTA = "关注我，给你带来更多AI知识。"
-
-
 def iter_strings(value: Any, location: str = "episode"):
     if isinstance(value, str):
         yield location, value
@@ -51,7 +50,12 @@ def iter_strings(value: Any, location: str = "episode"):
 
 
 def validate_episode(
-    episode: dict[str, Any], ending_cta: str, index: int, *, require_summary: bool = True
+    episode: dict[str, Any],
+    ending_cta: str,
+    index: int,
+    *,
+    require_summary: bool = True,
+    allow_cross_episode_teaser: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     episode_id = episode.get("episode", index)
@@ -64,11 +68,12 @@ def validate_episode(
         errors.append(f"episode {episode_id}: scenes must be a non-empty list")
         return errors
 
-    for location, text in iter_strings(episode, f"episode {episode_id}"):
-        for label, pattern in TEASER_PATTERNS:
-            match = pattern.search(text)
-            if match:
-                errors.append(f"{location}: cross-episode teaser '{label}' ({match.group(0)})")
+    if not allow_cross_episode_teaser:
+        for location, text in iter_strings(episode, f"episode {episode_id}"):
+            for label, pattern in TEASER_PATTERNS:
+                match = pattern.search(text)
+                if match:
+                    errors.append(f"{location}: cross-episode teaser '{label}' ({match.group(0)})")
 
     final_text = str(scenes[-1].get("text", "")).strip() if isinstance(scenes[-1], dict) else ""
     if not final_text:
@@ -82,6 +87,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--series", type=Path, required=True, help="series.json or a generated scenes.json")
     parser.add_argument("--ending-cta", default=None, help="override the CTA expected at the end of the final scene")
+    parser.add_argument("--profile", type=Path, help="resolved profile JSON")
     args = parser.parse_args()
 
     try:
@@ -90,7 +96,16 @@ def main() -> int:
         print(f"ERROR: cannot read {args.series}: {exc}", file=sys.stderr)
         return 2
 
-    ending_cta = str(args.ending_cta if args.ending_cta is not None else payload.get("ending_cta", DEFAULT_CTA)).strip()
+    profile = load_mapping(args.profile) if args.profile else {}
+    configured_cta = get_in(profile, "episode.final_cta", "")
+    allow_cross_episode_teaser = bool(
+        get_in(profile, "episode.allow_cross_episode_teaser", False)
+    )
+    ending_cta = str(
+        args.ending_cta
+        if args.ending_cta is not None
+        else payload.get("ending_cta", configured_cta or "")
+    ).strip()
     is_series = "episodes" in payload
     if is_series:
         episodes = payload.get("episodes")
@@ -105,7 +120,15 @@ def main() -> int:
         if not isinstance(episode, dict):
             errors.append(f"episode {index}: entry must be an object")
             continue
-        errors.extend(validate_episode(episode, ending_cta, index, require_summary=is_series))
+        errors.extend(
+            validate_episode(
+                episode,
+                ending_cta,
+                index,
+                require_summary=is_series,
+                allow_cross_episode_teaser=allow_cross_episode_teaser,
+            )
+        )
 
     if errors:
         print("Episode independence validation failed:", file=sys.stderr)
@@ -113,7 +136,16 @@ def main() -> int:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print(f"Episode independence validation passed: {len(episodes)} episode(s), teaser-free and CTA-terminated.")
+    ending_policy = "configured CTA present" if ending_cta else "no mandatory CTA"
+    teaser_policy = (
+        "cross-episode teaser explicitly allowed"
+        if allow_cross_episode_teaser
+        else "teaser-free"
+    )
+    print(
+        f"Episode independence validation passed: {len(episodes)} episode(s), "
+        f"{teaser_policy}, {ending_policy}."
+    )
     return 0
 
 

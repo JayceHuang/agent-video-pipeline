@@ -8,6 +8,8 @@ import json
 import math
 from pathlib import Path
 
+from profile_config import get_in, load_resolved_profile
+
 
 IGNORED = set(" \t\n，。！？；：、,.!?;:“”‘’（）()—｜")
 CONTINUOUS_MODE = "continuous_episode_take"
@@ -176,10 +178,14 @@ def main() -> int:
     parser.add_argument("--min-cpm", type=float)
     parser.add_argument("--max-cpm", type=float)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--profile", type=Path, help="resolved profile JSON")
     args = parser.parse_args()
 
     timeline = json.loads(args.timeline.expanduser().resolve().read_text(encoding="utf-8"))
-    configured_range = timeline.get("allowed_cpm_range") or [290.0, 300.0]
+    profile, _ = load_resolved_profile(args.profile, None, required=args.profile is not None)
+    configured_range = timeline.get("allowed_cpm_range") or get_in(
+        profile, "voice.allowed_range", [0.0, float("inf")]
+    )
     min_cpm = float(args.min_cpm if args.min_cpm is not None else configured_range[0])
     max_cpm = float(args.max_cpm if args.max_cpm is not None else configured_range[1])
     if timeline.get("generation_mode") == CONTINUOUS_MODE:

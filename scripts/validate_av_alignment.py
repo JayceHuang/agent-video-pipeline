@@ -9,9 +9,12 @@ import html
 import json
 import math
 import re
+import subprocess
 import wave
 from pathlib import Path
 from typing import Any
+
+from profile_config import get_in, load_resolved_profile
 
 
 TRAILING_CLOSERS = "”’」』）)]】"
@@ -47,8 +50,30 @@ def resolve_project_path(project: Path, raw: str) -> Path:
 
 
 def wav_duration(path: Path) -> float:
-    with wave.open(str(path), "rb") as handle:
-        return handle.getnframes() / float(handle.getframerate())
+    try:
+        with wave.open(str(path), "rb") as handle:
+            return handle.getnframes() / float(handle.getframerate())
+    except wave.Error:
+        # Python 3.11's stdlib wave reader rejects valid 24-bit
+        # WAVE_FORMAT_EXTENSIBLE files (format tag 65534), while FFmpeg and
+        # browsers decode them correctly. Fall back to ffprobe for duration
+        # instead of forcing the production master to a lower bit depth.
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(result.stdout.strip())
 
 
 def scene_records(data: Any) -> list[dict[str, Any]]:
@@ -60,9 +85,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--profile", type=Path, help="resolved profile JSON")
     args = parser.parse_args()
 
     project = args.project.expanduser().resolve()
+    profile, profile_path = load_resolved_profile(args.profile, project, required=True)
+    fps = float(get_in(profile, "layout.canvas.fps", 30.0))
+    frame_tolerance = 1.0 / fps
+    illustration_policy = get_in(profile, "layout.illustration_skill", {})
+    illustration_policy = illustration_policy if isinstance(illustration_policy, dict) else {}
     paths = {
         "scenes": project / "scenes.json",
         "timeline": project / "audio/timeline.json",
@@ -75,6 +106,8 @@ def main() -> int:
     report_path = (args.report or project / ".hyperframes/alignment-qc.json").expanduser().resolve()
     errors: list[str] = []
     warnings: list[str] = []
+    if not illustration_policy.get("enabled") and not paths["visual_assets"].is_file():
+        paths.pop("visual_assets")
     for name, path in paths.items():
         if not path.is_file():
             errors.append(f"missing {name}: {path}")
@@ -89,7 +122,11 @@ def main() -> int:
     timeline = load_json(paths["timeline"])
     captions = load_json(paths["captions"])
     words_doc = load_json(paths["words"])
-    visual_assets = load_json(paths["visual_assets"])
+    visual_assets = (
+        load_json(paths["visual_assets"])
+        if "visual_assets" in paths
+        else {"status": "disabled", "shot_list": [], "assets": []}
+    )
     motion = load_json(paths["motion"])
     bindings_doc = load_json(paths["bindings"])
 
@@ -115,7 +152,7 @@ def main() -> int:
         errors.append("timeline audio must be the narration master WAV")
     else:
         actual_duration = wav_duration(audio_path)
-        if not math.isclose(actual_duration, expected_duration, abs_tol=1 / 30):
+        if not math.isclose(actual_duration, expected_duration, abs_tol=frame_tolerance):
             errors.append(
                 f"narration master duration {actual_duration:.6f}s != timeline {expected_duration:.6f}s"
             )
@@ -136,7 +173,7 @@ def main() -> int:
         start, end = float(group.get("start", -1)), float(group.get("end", -1))
         scene_start = float(timing_by_id[scene_id].get("start_s", 0))
         scene_end = float(timing_by_id[scene_id].get("end_s", 0))
-        if start < scene_start - 1 / 30 or end > scene_end + 1 / 30 or end <= start:
+        if start < scene_start - frame_tolerance or end > scene_end + frame_tolerance or end <= start:
             errors.append(f"caption {group.get('id')} timing leaves scene {scene_id}")
         text = str(group.get("text", "")).strip()
         boundary_text = text.rstrip(TRAILING_CLOSERS)
@@ -174,12 +211,24 @@ def main() -> int:
         end = float(word.get("end", word.get("end_s", -1)))
         scene_start = float(timing_by_id[scene_id].get("start_s", 0))
         scene_end = float(timing_by_id[scene_id].get("end_s", 0))
-        if start < scene_start - 1 / 30 or end > scene_end + 1 / 30 or end < start:
+        if start < scene_start - frame_tolerance or end > scene_end + frame_tolerance or end < start:
             errors.append(f"word {word_id} timing leaves scene {scene_id}")
         words_by_scene[scene_id].append(word)
 
     for scene_id, scene_words in words_by_scene.items():
-        scene_words.sort(key=lambda item: float(item.get("start", item.get("start_s", 0))))
+        # Forced aligners can assign the same timestamp (or sub-millisecond
+        # overlaps) to adjacent letters of one English token. Text coverage
+        # follows the source-order word IDs; timing bounds are validated
+        # independently above. Sorting solely by float start can therefore
+        # transpose letters such as Chrome -> ChromMe and create a false fail.
+        def source_order(item: dict[str, Any]) -> tuple[int, float]:
+            match = re.search(r"-(\d+)$", str(item.get("id", "")))
+            return (
+                int(match.group(1)) if match else 10**9,
+                float(item.get("start", item.get("start_s", 0))),
+            )
+
+        scene_words.sort(key=source_order)
         word_text = normalize("".join(str(item.get("text", "")) for item in scene_words))
         source_text = normalize(str(scenes_by_id.get(scene_id, {}).get("text", "")))
         if word_text != source_text:
@@ -206,7 +255,7 @@ def main() -> int:
                 errors.append(f"{beat_id}: word_id is absent from caption words")
             else:
                 word_start = float(aligned_word.get("start", aligned_word.get("start_s", -1)))
-                if not math.isclose(float(beat.get("cue_s", -1)), word_start, abs_tol=1 / 30):
+                if not math.isclose(float(beat.get("cue_s", -1)), word_start, abs_tol=frame_tolerance):
                     errors.append(f"{beat_id}: cue_s does not match aligned word start")
             visual = beat.get("visual")
             if not isinstance(visual, dict) or not str(visual.get("title", "")).strip():
@@ -232,9 +281,13 @@ def main() -> int:
             errors.append(f"image asset is missing: {asset_path}")
         elif str(asset.get("sha256", "")) != sha256(asset_path):
             errors.append(f"image asset hash changed: {asset_path}")
-    for scene_id, scene_assets in assets_by_scene.items():
-        if len(scene_assets) != 1:
-            errors.append(f"{scene_id}: expected exactly one scene image asset, found {len(scene_assets)}")
+    if illustration_policy.get("require_asset_per_scene"):
+        for scene_id, scene_assets in assets_by_scene.items():
+            if len(scene_assets) != 1:
+                errors.append(f"{scene_id}: expected exactly one scene image asset, found {len(scene_assets)}")
+
+    if motion.get("configuration", {}).get("sha256") != get_in(profile, "_meta.profile_sha256"):
+        errors.append("semantic motion is stale for the resolved profile")
 
     if str(bindings_doc.get("semantic_motion_sha256", "")) != sha256(paths["motion"]):
         errors.append("composition bindings are stale for the semantic motion plan")
@@ -357,6 +410,11 @@ def main() -> int:
         "schema_version": 1,
         "status": "pass" if not errors else "fail",
         "project": str(project),
+        "profile": {
+            "path": str(profile_path),
+            "id": profile.get("profile_id"),
+            "sha256": get_in(profile, "_meta.profile_sha256"),
+        },
         "inputs": {name: {"path": str(path), "sha256": sha256(path)} for name, path in paths.items()},
         "audio": {
             "path": str(audio_path),

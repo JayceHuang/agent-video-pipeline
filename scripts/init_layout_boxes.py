@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from profile_config import get_in, load_resolved_profile
+
 
 Z_INDEX = {"background": 0, "content": 10, "illustration": 20, "title": 30, "transition": 40, "caption": 90, "avatar": 100}
 
@@ -40,6 +42,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--motion-plan", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--profile", type=Path, required=True, help="resolved profile JSON")
     args = parser.parse_args()
 
     motion_path = args.motion_plan.expanduser().resolve()
@@ -56,10 +59,17 @@ def main() -> int:
             "end_s": end,
             "elements": [element_from_box(box, start, end) for box in boxes],
         })
+    profile, profile_path = load_resolved_profile(args.profile, None, required=True)
+    canvas = get_in(profile, "layout.canvas", {})
     output = {
         "schema_version": 1,
         "status": "draft",
-        "canvas": {"width": 1920, "height": 1080},
+        "canvas": {"width": int(canvas["width"]), "height": int(canvas["height"])},
+        "profile": {
+            "id": profile.get("profile_id"),
+            "path": str(profile_path),
+            "sha256": get_in(profile, "_meta.profile_sha256"),
+        },
         "motion_plan": {"path": str(motion_path), "sha256": sha256(motion_path)},
         "actual_dom_verified": False,
         "scenes": scenes,

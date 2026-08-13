@@ -1,4 +1,4 @@
-# VoxCPM2 自然且稳定的声音契约
+# 自然且稳定的声音契约
 
 目标不是把声音压成一条直线，而是让同一个人以同一种发声状态，带着受控的自然语气讲完整集。生产承诺是“异常 take 不会进入成片”，不是承诺生成模型永不产生异常。
 
@@ -26,7 +26,7 @@
 3. 若模型无法可靠生成整集，才按完整句子切为 45–60 秒块；每块共享黄金 prompt、模型 revision、cfg、steps 和声学基线，并带 2.5 秒上下文做候选连续性比较。禁止按视觉场景机械重置声音。
 4. 候选按确定性 seed 顺序逐个生成。第 1 个生成后立即做 raw voice-stability 和 ASR/forced alignment；只有 acoustic/alignment 失败，或未进入 `voice-stability-profile.json` 的严格 early-stop 区间时才生成下一个。默认最多 3 个，必要时显式放宽到 5 个；`--candidate-count` 是上限，`--fixed-candidate-batch` 只用于诊断基准测试。
 5. 单候选早停必须同时满足 acoustic pass、alignment pass、全局 retime 0.97–1.03，以及 profile 中更严格的局部包络、F0 和 spectral-centroid 阈值。未早停时先淘汰硬门禁失败项，再使用可复现的机器评分组合 prompt F0/centroid 距离、局部 F0/centroid 步进、1 秒包络和 CPM 偏差，选择最低分。不能只按语速选择。
-6. 约 330 字/分钟是名义目标，整集 320–340 为自然区间。连续 take 只允许一次全局 retime：0.97–1.03 优先，0.95–1.05 为硬边界；超出就重生候选或改稿，不按 scene 使用相反方向的倍速。
+6. 名义语速与允许区间必须读取 resolved profile。连续 take 只允许一次全局 retime：优先区间与硬边界读取 voice stability profile；超出就重生候选或改稿，不按 scene 使用相反方向的倍速。
 7. 后处理只负责 gain，不修语气：句级慢速 gain rider 最多 ±3 dB（约 250 ms attack / 600 ms release），随后只做一次轻压缩（ratio≤1.4、GR≤4 dB）和一次带 measured 参数的两遍 EBU R128 loudnorm。禁止 scene 和 master 各做一次动态 loudnorm，禁止未经检测固定削减 146–293 Hz 的男声基频/低共振区。
 8. master 必须运行 `validate_audio_boundaries.py` 和 `validate_voice_stability.py`；二者都为 `pass` 才能对齐字幕与渲染。最终 MP4 再运行相同局部画像，不能只看整集 LUFS/LRA。
 9. 所有 QC 报告绑定 profile、prompt、reference、prosody、timeline、caption、raw/master/final 的 SHA-256；文件变化后旧报告立即视为 stale。产物先在 staging 完整通过，再原子替换项目文件，禁止半套新时间线配旧 master。
@@ -54,22 +54,28 @@
 
 ## 标准命令
 
+以下 `<pipeline-python>`、`<voxcpm-python>` 与 `<aligner-python>` 分别读取 resolved profile 的 `pipeline_runtime.python`、`tts_runtime.generator_python` 和 `tts_runtime.aligner_python`，不要替换为裸 `python3`。
+
 ```bash
-python scripts/prepare_voxcpm2_prompt.py
+<pipeline-python> scripts/prepare_voxcpm2_prompt.py \
+  --profile /path/to/resolved-profile.json
 
 <voxcpm-python> scripts/generate_all_voxcpm2.py \
   --mode episode-take --series /path/to/series.json \
   --project /path/to/episode-project \
-  --episode 2 --target-cpm 330 --candidate-count 3
+  --profile /path/to/resolved-profile.json \
+  --episode 2 --candidate-count 3
 
 <aligner-python> scripts/align_all_captions.py \
   --series /path/to/series.json --project /path/to/episode-project \
   --episode 2 --source-master \
   --timings /path/to/episode-project/pipeline-timings.json
 
-python scripts/validate_voice_stability.py \
-  --project /path/to/project
+<pipeline-python> scripts/validate_voice_stability.py \
+  --project /path/to/project \
+  --pipeline-profile /path/to/resolved-profile.json
 
-python scripts/validate_video_output.py \
-  --dir /path/to/project/renders
+<pipeline-python> scripts/validate_video_output.py \
+  --dir /path/to/project/renders \
+  --profile /path/to/resolved-profile.json
 ```

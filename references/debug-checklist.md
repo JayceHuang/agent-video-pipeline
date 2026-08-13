@@ -14,10 +14,10 @@
 10. `scripts/validate_semantic_motion.py --require-approved` 与 `.hyperframes/motion-qc.json`：确认同步、密度、长 hold、seek-safe 和布局计划通过。
 11. `.hyperframes/layout-boxes.json` 与 `scripts/validate_layout_boxes.py --require-approved`：确认实际元素的 swept bbox、时间和层级没有侵入头像、字幕、人物或其他图片。
 12. `.hyperframes/alignment-qc.json` 与 `scripts/validate_av_alignment.py`：确认声音全文、字幕组、逐字 cue、全部动效 beat、DOM 卡片文字和场景插图是一条完整绑定链，没有遗漏或错配。
-13. HyperFrames check 与场景快照：抽查标题卡、每场 establish/hero/payoff/end、所有转场、metric/warning/comparison、CTA 和封面候选；确认圆区净空、无白闪、无元素复活、无未完成阴影。
+13. HyperFrames check 与场景快照：抽查标题卡、每场 establish/hero/payoff/end、所有转场、metric/warning/comparison、CTA 和封面候选；确认数字人安全区净空、无白闪、无元素复活、无未完成阴影。
 14. 场景快照：确认底部除正式字幕外没有说明性小字、制作备注、技术标签、引擎名或时间轴标记。
-15. 首帧与 CTA 快照：确认 t=0 音效已登记，开头/结尾关注动画可见且不遮挡正文、人物、字幕或安全区。
+15. 首帧与 CTA 快照：仅当 Profile 启用对应音效或 CTA 动画时，确认效果已登记、可见且不遮挡正文、人物、字幕或安全区。
 16. `cover-description.md`：确认封面帧不是空白页，描述与画面一致。
-17. `publishing-copy.md`：确认三个平台都有独立的标题、正文和标签。
+17. `publishing-copy.md`：确认 Profile 配置的每个平台都有独立的标题、正文和标签。
 
 提示：第 1–12 步可以直接用 `scripts/run_gates.py --project <dir> --stage all` 一次跑完机器可验的部分；只有失败项需要按上表回到对应文件手工定位。

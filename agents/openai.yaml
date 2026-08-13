@@ -1,4 +1,4 @@
 interface:
-  display_name: "Agent视频流水线"
-  short_description: "长文拆解、稳定配音、语义动效、字幕动画与发布素材一体化工作流"
-  default_prompt: "使用 $agent-video-pipeline 把这篇长文生成可调试的高级感教程视频，先输出并校验语义动效计划，再渲染成片与发布素材。"
+  display_name: "通用 Agent 视频流水线"
+  short_description: "将已批准口播稿编排为可校验、可恢复、可交付的视频生产流水线"
+  default_prompt: "使用 $agent-video-pipeline 读取外部 Profile，把已批准的口播稿生成经过门禁校验的视频及发布素材。"

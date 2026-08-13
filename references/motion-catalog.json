@@ -94,8 +94,8 @@
     "mode": "semantic-deterministic-rotation",
     "minimum_distinct_layouts_per_episode": 3,
     "forbid_adjacent_repeat": true,
-    "forbid_centered_presenter_default": true,
-    "presenter_may_be_omitted_for_diagram_scenes": false
+    "forbid_centered_presenter_default": false,
+    "presenter_may_be_omitted_for_diagram_scenes": true
   },
   "layout_variants": {
     "host-left-board-right": {
@@ -148,6 +148,7 @@
     }
   },
   "motion_costs": {
+    "none": 0.0,
     "micro": 0.25,
     "support": 0.5,
     "primary": 1.0,
@@ -188,7 +189,7 @@
     "stagger-card-assemble": {"tier": "low", "cost": "primary", "fallback": "semantic-card-reveal"},
     "stat-bars-and-fills": {"tier": "low", "cost": "support", "fallback": "fade-slide"},
     "static-accent": {"tier": "low", "cost": "micro", "fallback": "static-step"},
-    "static-step": {"tier": "low", "cost": "micro", "fallback": null},
+    "static-step": {"tier": "low", "cost": "none", "fallback": null},
     "summary-node-convergence": {"tier": "medium", "cost": "support", "fallback": "claim-land"},
     "term-pin-definition-reveal": {"tier": "low", "cost": "primary", "fallback": "semantic-card-reveal"},
     "warning-frame-tighten": {"tier": "medium", "cost": "primary", "fallback": "semantic-card-reveal"}

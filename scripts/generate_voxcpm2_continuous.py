@@ -37,28 +37,16 @@ import soundfile as sf
 import torch
 from voxcpm import VoxCPM
 
+from profile_config import get_in, load_resolved_profile
+
 
 ROOT = Path(__file__).resolve().parent  # <skill>/scripts
 PIPELINE = ROOT.parent
 SCRIPTS = ROOT
 PROFILE_PATH = PIPELINE / "references/voice-stability-profile.json"
-DEFAULT_PROFILE_YAML = PIPELINE / "references/default-profile.yaml"
 PROSODY_VALIDATOR = SCRIPTS / "validate_prosody.py"
 EPISODE_VALIDATOR = SCRIPTS / "validate_episode_independence.py"
 ALIGNER_SCRIPT = ROOT / "align_all_captions.py"
-
-
-def _runtime_default(key: str, fallback: str) -> Path:
-    """Read tts_runtime defaults from references/default-profile.yaml without PyYAML."""
-    try:
-        text = DEFAULT_PROFILE_YAML.read_text(encoding="utf-8")
-        match = re.search(rf"^\s*{key}:\s*\"?([^\"\n]+)\"?\s*$", text, re.MULTILINE)
-        if match:
-            return Path(match.group(1).strip()).expanduser()
-    except OSError:
-        pass
-    return Path(fallback).expanduser()
-
 
 def resolve_project(explicit, series: dict, series_path: Path, ep: str) -> Path:
     """--project wins; otherwise series.json must declare project_dir_template."""
@@ -73,17 +61,16 @@ def resolve_project(explicit, series: dict, series_path: Path, ep: str) -> Path:
     return (series_path.parent / template.format(ep=ep)).resolve()
 
 
-ALIGNER_PYTHON = _runtime_default(
-    "aligner_python",
-    "/Users/jaycehuang/obsidian-proj/videos/obsidian-beginner-horizontal-synced/.venv-audio/bin/python",
-)
+ALIGNER_PYTHON: Path | None = None
 SERIES_PATH: Path | None = None
 SERIES: dict = {}
-MODEL = _runtime_default("model_path", "/Users/jaycehuang/.cache/voxcpm2-local/models/VoxCPM2")
-MODEL_CONFIG = MODEL / "config.json"
+MODEL: Path | None = None
+MODEL_CONFIG: Path | None = None
 TARGET_CPM: float | None = None
 ENDING_CTA = ""
 PROMPT_MANIFEST: Path | None = None
+PIPELINE_PROFILE: dict[str, Any] = {}
+RESOLVED_PROFILE_PATH: Path | None = None
 IGNORED = set(" \t\n，。！？；：、,.!?;:“”‘’（）()—｜")
 SEED_BASE = 2026080603
 CFG_VALUE = 1.5
@@ -259,6 +246,8 @@ def scenes_with_ending_cta(episode: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def load_prompt() -> dict[str, Any]:
+    if PROMPT_MANIFEST is None:
+        raise ValueError("voice prompt manifest is required")
     if not PROMPT_MANIFEST.is_file():
         raise FileNotFoundError(f"missing frozen VoxCPM2 prompt manifest: {PROMPT_MANIFEST}")
     prompt = json.loads(PROMPT_MANIFEST.read_text(encoding="utf-8"))
@@ -270,7 +259,10 @@ def load_prompt() -> dict[str, Any]:
         raise RuntimeError("frozen prompt WAV hash differs from its manifest")
     if sha256(source) != prompt.get("source_sha256"):
         raise RuntimeError("original voice source changed; rebuild and review the golden prompt")
-    expected_text = str(SERIES.get("voice_prompt_text", "")).strip()
+    expected_text = str(
+        SERIES.get("voice_prompt_text", get_in(PIPELINE_PROFILE, "voice.voice_prompt_text", ""))
+        or ""
+    ).strip()
     if expected_text and prompt.get("prompt_text") != expected_text:
         raise RuntimeError("series voice_prompt_text differs from the frozen prompt manifest")
     return prompt
@@ -302,7 +294,17 @@ def load_prosody(project: Path, scenes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def allowed_cpm_range(target: float) -> list[float]:
-    return [target - 5.0, target + 5.0] if target <= 300 else [target - 10.0, target + 10.0]
+    nominal = float(get_in(PIPELINE_PROFILE, "voice.target_effective_chinese_chars_per_minute", target))
+    if abs(target - nominal) < 1e-6:
+        configured = get_in(PIPELINE_PROFILE, "voice.allowed_range", [target - 10, target + 10])
+        return [float(configured[0]), float(configured[1])]
+    fast = get_in(PIPELINE_PROFILE, "voice.fast_trial", {})
+    if isinstance(fast, dict) and abs(
+        target - float(fast.get("nominal_target_effective_chinese_chars_per_minute", -1))
+    ) < 1e-6:
+        configured = fast.get("allowed_range", [target - 10, target + 10])
+        return [float(configured[0]), float(configured[1])]
+    return [target - 10.0, target + 10.0]
 
 
 def baseline_metrics(audio: Path, profile: dict[str, Any]) -> dict[str, float]:
@@ -826,6 +828,7 @@ def prepare_candidates(
         "prompt_wav_sha256": sha256(prompt_wav),
         "prosody_sha256": sha256(project / "audio/prosody.json"),
         "profile_sha256": profile_sha,
+        "pipeline_profile_sha256": get_in(PIPELINE_PROFILE, "_meta.profile_sha256"),
         "model_config_sha256": sha256(MODEL_CONFIG),
         "model_fingerprint_sha256": model_fingerprint(MODEL),
         "generator_sha256": sha256(Path(__file__).resolve()),
@@ -849,6 +852,7 @@ def prepare_candidates(
         required_cache_fields = {
             "prosody_sha256": shared_cache_inputs["prosody_sha256"],
             "profile_sha256": shared_cache_inputs["profile_sha256"],
+            "pipeline_profile_sha256": shared_cache_inputs["pipeline_profile_sha256"],
             "model_config_sha256": shared_cache_inputs["model_config_sha256"],
             "model_fingerprint_sha256": shared_cache_inputs["model_fingerprint_sha256"],
             "cfg_value": CFG_VALUE,
@@ -1070,14 +1074,18 @@ def prepare_candidates(
 
 
 def main() -> int:
-    global ALIGNER_PYTHON, ENDING_CTA, MODEL, MODEL_CONFIG, PROMPT_MANIFEST, SERIES, SERIES_PATH, TARGET_CPM
+    global ALIGNER_PYTHON, ENDING_CTA, MODEL, MODEL_CONFIG, PROMPT_MANIFEST
+    global SERIES, SERIES_PATH, TARGET_CPM, PROFILE_PATH
+    global PIPELINE_PROFILE, RESOLVED_PROFILE_PATH
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--episode", type=int, required=True)
     parser.add_argument("--target-cpm", type=float)
     parser.add_argument("--series", type=Path, required=True)
     parser.add_argument("--project", type=Path)
-    parser.add_argument("--model", type=Path, default=MODEL)
-    parser.add_argument("--aligner-python", type=Path, default=ALIGNER_PYTHON)
+    parser.add_argument("--model", type=Path)
+    parser.add_argument("--aligner-python", type=Path)
+    parser.add_argument("--profile", type=Path, help="resolved pipeline profile JSON")
+    parser.add_argument("--stability-profile", type=Path)
     parser.add_argument("--candidate-count", type=int, default=3)
     parser.add_argument(
         "--fixed-candidate-batch",
@@ -1105,21 +1113,58 @@ def main() -> int:
     if not SERIES_PATH.is_file():
         raise FileNotFoundError(f"series file not found: {SERIES_PATH}")
     SERIES = json.loads(SERIES_PATH.read_text(encoding="utf-8"))
-    TARGET_CPM = float(SERIES["target_effective_chars_per_minute"])
-    ENDING_CTA = str(SERIES.get("ending_cta", "")).strip()
-    PROMPT_MANIFEST = Path(SERIES["voice_prompt_manifest"]).expanduser().resolve()
-    MODEL = args.model.expanduser().resolve()
+    ep = str(args.episode).zfill(2)
+    project = resolve_project(args.project, SERIES, SERIES_PATH, ep)
+    PIPELINE_PROFILE, RESOLVED_PROFILE_PATH = load_resolved_profile(
+        args.profile, project, required=True
+    )
+    TARGET_CPM = float(
+        SERIES.get(
+            "target_effective_chars_per_minute",
+            get_in(PIPELINE_PROFILE, "voice.target_effective_chinese_chars_per_minute"),
+        )
+    )
+    ENDING_CTA = str(
+        SERIES.get("ending_cta", get_in(PIPELINE_PROFILE, "episode.final_cta", "")) or ""
+    ).strip()
+    prompt_value = SERIES.get(
+        "voice_prompt_manifest",
+        get_in(PIPELINE_PROFILE, "voice.voice_prompt_manifest"),
+    )
+    model_value = args.model or get_in(PIPELINE_PROFILE, "tts_runtime.model_path")
+    aligner_value = args.aligner_python or get_in(PIPELINE_PROFILE, "tts_runtime.aligner_python")
+    if not prompt_value or not model_value or not aligner_value:
+        raise ValueError(
+            "prompt manifest, model path, and aligner Python must come from series, CLI, or resolved profile"
+        )
+    PROMPT_MANIFEST = Path(str(prompt_value)).expanduser().absolute()
+    MODEL = Path(str(model_value)).expanduser().absolute()
     MODEL_CONFIG = MODEL / "config.json"
     # Keep the virtualenv launcher path intact. Path.resolve() follows the
     # symlink to the base interpreter and silently drops the venv site-packages
     # (including mlx_audio), which makes forced alignment fail.
-    ALIGNER_PYTHON = args.aligner_python.expanduser().absolute()
+    ALIGNER_PYTHON = Path(str(aligner_value)).expanduser().absolute()
+    stability_value = args.stability_profile or get_in(
+        PIPELINE_PROFILE,
+        "voice.voice_stability.profile",
+        "references/voice-stability-profile.json",
+    )
+    PROFILE_PATH = Path(str(stability_value)).expanduser()
+    if not PROFILE_PATH.is_absolute():
+        PROFILE_PATH = PIPELINE / PROFILE_PATH
     args.target_cpm = float(args.target_cpm if args.target_cpm is not None else TARGET_CPM)
     if not MODEL_CONFIG.is_file():
         raise FileNotFoundError(f"VoxCPM2 model config not found: {MODEL_CONFIG}")
 
     subprocess.run(
-        [sys.executable, str(EPISODE_VALIDATOR), "--series", str(SERIES_PATH)],
+        [
+            sys.executable,
+            str(EPISODE_VALIDATOR),
+            "--series",
+            str(SERIES_PATH),
+            "--profile",
+            str(RESOLVED_PROFILE_PATH),
+        ],
         check=True,
     )
     episode = next(
@@ -1128,8 +1173,6 @@ def main() -> int:
     )
     if episode is None:
         raise ValueError(f"episode not found: {args.episode}")
-    ep = str(args.episode).zfill(2)
-    project = resolve_project(args.project, SERIES, SERIES_PATH, ep)
     scenes = scenes_with_ending_cta(episode)
     prosody = load_prosody(project, scenes)
     prompt = load_prompt()
@@ -1223,6 +1266,10 @@ def main() -> int:
         profile_sha,
     )
     timeline["sample_rate"] = sample_rate
+    timeline["pipeline_profile"] = {
+        "id": PIPELINE_PROFILE.get("profile_id"),
+        "sha256": get_in(PIPELINE_PROFILE, "_meta.profile_sha256"),
+    }
     timeline_path = project / "audio/timeline.json"
     atomic_json(timeline_path, timeline)
 
@@ -1268,6 +1315,11 @@ def main() -> int:
             "path": str(PROFILE_PATH),
             "sha256": profile_sha,
             "profile_id": profile.get("profile_id"),
+        },
+        "pipeline_profile": {
+            "path": str(RESOLVED_PROFILE_PATH),
+            "sha256": get_in(PIPELINE_PROFILE, "_meta.profile_sha256"),
+            "profile_id": PIPELINE_PROFILE.get("profile_id"),
         },
         "normalization": normalization,
         "leveling": leveling,

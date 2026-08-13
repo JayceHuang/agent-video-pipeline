@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from profile_config import get_in, load_resolved_profile
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -66,10 +68,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dir", type=Path, required=True)
     parser.add_argument("--video", default="final.mp4")
-    parser.add_argument("--max-duration", type=float, default=180.0)
+    parser.add_argument("--max-duration", type=float)
+    parser.add_argument("--profile", type=Path, required=True, help="resolved profile JSON")
     args = parser.parse_args()
 
     root = args.dir.expanduser().resolve()
+    project = root.parent
+    pipeline_profile, resolved_profile_path = load_resolved_profile(
+        args.profile, project, required=True
+    )
+    canvas = get_in(pipeline_profile, "layout.canvas", {})
+    expected_width = int(canvas["width"])
+    expected_height = int(canvas["height"])
+    expected_fps = float(canvas["fps"])
+    mix_range = get_in(
+        pipeline_profile, "voice.final_mix.integrated_lufs_range", [-18.0, -14.0]
+    )
+    true_peak_limit = float(
+        get_in(pipeline_profile, "voice.final_mix.true_peak_ceiling_dbtp", -1.0)
+    )
+    configured_max_duration = get_in(pipeline_profile, "episode.max_duration_s")
+    max_duration = args.max_duration if args.max_duration is not None else configured_max_duration
     video = root / args.video
     errors: list[str] = []
     warnings: list[str] = []
@@ -91,6 +110,30 @@ def main() -> int:
         if not (root / name).is_file():
             errors.append(f"missing {name}")
 
+    visual_validator = Path(__file__).resolve().with_name("validate_visual_assets.py")
+    visual_gate = subprocess.run(
+        [
+            sys.executable,
+            str(visual_validator),
+            "--project",
+            str(project),
+            "--profile",
+            str(resolved_profile_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if visual_gate.returncode != 0:
+        errors.append(
+            "project visual asset gate failed: "
+            + (visual_gate.stderr or visual_gate.stdout).strip()
+        )
+    project_visual = project / "visual-assets.json"
+    colocated_visual = root / "visual-assets.json"
+    if project_visual.is_file() and colocated_visual.is_file():
+        if sha256(project_visual) != sha256(colocated_visual):
+            errors.append("co-located visual-assets.json is stale")
+
     stats: dict[str, Any] = {}
     if not video.is_file():
         errors.append(f"missing video: {video.name}")
@@ -106,33 +149,43 @@ def main() -> int:
             if not video_stream:
                 errors.append("missing video stream")
             else:
-                if video_stream.get("width") != 1920 or video_stream.get("height") != 1080:
-                    errors.append(f"expected 1920x1080, got {video_stream.get('width')}x{video_stream.get('height')}")
-                if abs(actual_fps - 30.0) > 0.15:
-                    errors.append(f"expected ~30fps CFR, got {actual_fps:.3f}fps")
+                if video_stream.get("width") != expected_width or video_stream.get("height") != expected_height:
+                    errors.append(
+                        f"expected {expected_width}x{expected_height}, "
+                        f"got {video_stream.get('width')}x{video_stream.get('height')}"
+                    )
+                if abs(actual_fps - expected_fps) > 0.15:
+                    errors.append(f"expected ~{expected_fps:g}fps CFR, got {actual_fps:.3f}fps")
             if not audio_stream:
                 errors.append("missing audio stream")
             else:
                 final_loudness = loudness(video)
                 stats["loudness"] = final_loudness
-                if not (-17.5 <= final_loudness["integrated_lufs"] <= -14.5):
+                if not (float(mix_range[0]) <= final_loudness["integrated_lufs"] <= float(mix_range[1])):
                     errors.append(
                         f"final mix loudness {final_loudness['integrated_lufs']:.2f} LUFS "
-                        "outside -17.5 to -14.5 LUFS"
+                        f"outside {mix_range[0]} to {mix_range[1]} LUFS"
                     )
-                if final_loudness["true_peak_dbtp"] > -1.8:
+                if final_loudness["true_peak_dbtp"] > true_peak_limit:
                     errors.append(
-                        f"final mix true peak {final_loudness['true_peak_dbtp']:.2f} dBTP exceeds -1.8 dBTP"
+                        f"final mix true peak {final_loudness['true_peak_dbtp']:.2f} dBTP "
+                        f"exceeds {true_peak_limit:.2f} dBTP"
                     )
-            if duration > args.max_duration:
-                warnings.append(f"duration {duration:.2f}s exceeds {args.max_duration:.2f}s")
+            if max_duration is not None and duration > float(max_duration):
+                warnings.append(f"duration {duration:.2f}s exceeds {float(max_duration):.2f}s")
         except Exception as exc:  # noqa: BLE001 - report the failed artifact
             errors.append(f"ffprobe failed: {exc}")
 
     copy_path = root / "publishing-copy.md"
     if copy_path.is_file():
         copy = copy_path.read_text(encoding="utf-8")
-        for section in ("抖音", "小红书", "视频号"):
+        configured_platforms = get_in(pipeline_profile, "publishing.platforms", [])
+        copy_templates = get_in(pipeline_profile, "publishing.copy_templates", {})
+        copy_templates = copy_templates if isinstance(copy_templates, dict) else {}
+        for platform in configured_platforms if isinstance(configured_platforms, list) else []:
+            template = copy_templates.get(str(platform), {})
+            template = template if isinstance(template, dict) else {}
+            section = str(template.get("display_name", platform))
             if f"## {section}" not in copy:
                 errors.append(f"publishing-copy.md missing section: {section}")
 
@@ -163,7 +216,6 @@ def main() -> int:
         except (OSError, json.JSONDecodeError) as exc:
             errors.append(f"invalid pipeline-timings.json: {exc}")
 
-    project = root.parent
     master_path = project / "audio/output/narration_master.wav"
     boundary_path = project / "audio/boundary-qc.json"
     if not boundary_path.is_file():
@@ -180,11 +232,16 @@ def main() -> int:
         except (OSError, json.JSONDecodeError) as exc:
             errors.append(f"invalid audio/boundary-qc.json: {exc}")
 
-    profile_path = (
-        Path(__file__).resolve().parent.parent
-        / "references"
-        / "voice-stability-profile.json"
+    stability_value = str(
+        get_in(
+            pipeline_profile,
+            "voice.voice_stability.profile",
+            "references/voice-stability-profile.json",
+        )
     )
+    stability_profile_path = Path(stability_value).expanduser()
+    if not stability_profile_path.is_absolute():
+        stability_profile_path = Path(__file__).resolve().parent.parent / stability_profile_path
     voice_path = project / "audio/voice-stability-qc.json"
     master_voice: dict[str, Any] | None = None
     if not voice_path.is_file():
@@ -196,7 +253,7 @@ def main() -> int:
                 errors.append("audio/voice-stability-qc.json did not pass")
             if master_path.is_file() and master_voice.get("audio", {}).get("sha256") != sha256(master_path):
                 errors.append("audio/voice-stability-qc.json is stale for the current narration master")
-            if master_voice.get("profile", {}).get("sha256") != sha256(profile_path):
+            if master_voice.get("profile", {}).get("sha256") != sha256(stability_profile_path):
                 errors.append("audio/voice-stability-qc.json uses a stale voice-stability profile")
             for key, relative in (
                 ("timeline_sha256", "audio/timeline.json"),
@@ -213,12 +270,22 @@ def main() -> int:
 
     final_voice: dict[str, Any] | None = None
     collection_mode = False
-    if video.is_file() and profile_path.is_file():
+    if video.is_file() and stability_profile_path.is_file():
         try:
-            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            stability_profile = json.loads(stability_profile_path.read_text(encoding="utf-8"))
             timeline_doc = json.loads((project / "audio/timeline.json").read_text(encoding="utf-8"))
             collection_mode = timeline_doc.get("generation_mode") == "validated_episode_collection"
-            offset = float(profile["final_mix"]["narration_offset_s"])
+            # The composition timeline and captions are authored against the
+            # narration master at t=0.  Only apply a final-mix offset when the
+            # rendered project explicitly records one; otherwise the profile's
+            # generic title-card allowance would shift caption windows and can
+            # create false local-RMS failures for zero-offset compositions.
+            offset = float(
+                timeline_doc.get(
+                    "narration_offset_s",
+                    timeline_doc.get("audio_offset_s", 0.0),
+                )
+            )
             final_report_path = root / "voice-stability-final-qc.json"
             validator = Path(__file__).resolve().with_name("validate_voice_stability.py")
             if collection_mode:
@@ -256,7 +323,9 @@ def main() -> int:
                         "--report",
                         str(final_report_path),
                         "--profile",
-                        str(profile_path),
+                        str(stability_profile_path),
+                        "--pipeline-profile",
+                        str(resolved_profile_path),
                     ],
                     capture_output=True,
                     text=True,
@@ -268,7 +337,7 @@ def main() -> int:
                     for item in (final_voice or {}).get("errors", [])[:4]:
                         errors.append(f"final voice: {item}")
             if final_voice and master_voice:
-                drift_limit = float(profile["final_mix"]["max_local_metric_drift_db"])
+                drift_limit = float(stability_profile["final_mix"]["max_local_metric_drift_db"])
                 metric_keys = (
                     "active_1s_p90_p10_db",
                     "adjacent_caption_rms_max_delta_db",
@@ -314,6 +383,8 @@ def main() -> int:
                 errors.append("semantic-motion.json is not approved")
             if not str(motion_plan.get("review", {}).get("approved_by", "")).strip():
                 errors.append("semantic-motion.json is missing review.approved_by")
+            if motion_plan.get("configuration", {}).get("sha256") != get_in(pipeline_profile, "_meta.profile_sha256"):
+                errors.append("semantic-motion.json is stale for the resolved profile")
         except (OSError, json.JSONDecodeError) as exc:
             errors.append(f"invalid semantic-motion.json: {exc}")
     if not motion_qc_path.is_file():
@@ -386,6 +457,14 @@ def main() -> int:
     if manifest_path.is_file():
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_profile = manifest.get("profile", {})
+            if manifest_profile.get("sha256") != get_in(pipeline_profile, "_meta.profile_sha256"):
+                errors.append("asset-manifest.json is stale for the resolved profile")
+            visual_record = manifest.get("visual_assets_manifest", {})
+            if not visual_record:
+                errors.append("asset-manifest.json is missing visual asset traceability")
+            elif visual_record.get("sha256") != sha256(root / "visual-assets.json"):
+                errors.append("asset-manifest.json has stale visual asset manifest hash")
             recorded = manifest.get("semantic_motion", {})
             if not recorded:
                 errors.append("asset-manifest.json is missing semantic_motion traceability")
@@ -421,7 +500,8 @@ def main() -> int:
                     errors.append("collection first-frame SFX must start at t=0")
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 errors.append(f"invalid collection audio/sfx-cues.json: {exc}")
-        if (alignment_qc or {}).get("cta_policy", {}).get("final_cta_count") != 1:
+        configured_cta = str(get_in(pipeline_profile, "episode.final_cta", "") or "")
+        if configured_cta and (alignment_qc or {}).get("cta_policy", {}).get("final_cta_count") != 1:
             errors.append("collection must retain exactly one final follow CTA")
     elif not index_path.is_file():
         errors.append("missing project index.html")
@@ -431,16 +511,20 @@ def main() -> int:
             r'<audio\s+id="first-frame-sfx"[^>]*data-start="([0-9.]+)"[^>]*data-duration="([0-9.]+)"',
             html,
         )
-        if not first_sfx:
+        first_sfx_required = bool(
+            get_in(pipeline_profile, "layout.opening_title_card.first_frame_sfx.enabled", False)
+        )
+        if first_sfx_required and not first_sfx:
             errors.append("missing first-frame SFX audio element")
-        else:
+        elif first_sfx:
             if abs(float(first_sfx.group(1))) > 0.001:
                 errors.append("first-frame SFX must start at t=0")
             if float(first_sfx.group(2)) > 0.6:
                 errors.append("first-frame SFX must not exceed 0.6 seconds")
-        for selector in ("#intro-follow", "#follow-end"):
-            if selector not in html:
-                errors.append(f"missing deterministic follow animation: {selector}")
+        if get_in(pipeline_profile, "layout.follow_cta_animation.enabled", False):
+            for selector in ("#intro-follow", "#follow-end"):
+                if selector not in html:
+                    errors.append(f"missing deterministic follow animation: {selector}")
 
     report = {
         "schema_version": 1,
@@ -450,6 +534,11 @@ def main() -> int:
         "errors": errors,
         "warnings": warnings,
         "required_assets": required,
+        "profile": {
+            "path": str(resolved_profile_path),
+            "id": pipeline_profile.get("profile_id"),
+            "sha256": get_in(pipeline_profile, "_meta.profile_sha256"),
+        },
     }
     partial = root / "qc-report.json.part"
     partial.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -10,9 +10,16 @@ import math
 from pathlib import Path
 from typing import Any
 
+from profile_config import (
+    get_in,
+    load_resolved_profile,
+    resolve_layout_policy,
+    resolve_motion_preset,
+)
+
 
 TIER_RANK = {"low": 0, "medium": 1, "high": 2}
-REQUIRED_SAFE_ROLES = {"title", "content", "illustration", "caption", "avatar"}
+REQUIRED_SAFE_ROLES = {"title", "content", "caption"}
 
 
 def load_json(path: Path) -> Any:
@@ -61,29 +68,77 @@ def rects_intersect(left: dict[str, Any], right: dict[str, Any]) -> bool:
     )
 
 
-def validate_boxes(scene_id: str, boxes: Any, errors: list[str], warnings: list[str]) -> None:
+def validate_boxes(
+    scene_id: str,
+    boxes: Any,
+    errors: list[str],
+    warnings: list[str],
+    pipeline_profile: dict[str, Any],
+    *,
+    requires_illustration: bool,
+) -> None:
     if not isinstance(boxes, list):
         errors.append(f"{scene_id}: safe_boxes must be a list")
         return
     roles = {str(box.get("role")) for box in boxes if isinstance(box, dict)}
-    missing = REQUIRED_SAFE_ROLES - roles
+    required_roles = set(REQUIRED_SAFE_ROLES)
+    avatar_policy = get_in(pipeline_profile, "layout.avatar_safe_zone", {})
+    avatar_policy = avatar_policy if isinstance(avatar_policy, dict) else {}
+    avatar_enabled = bool(avatar_policy.get("enabled"))
+    if avatar_enabled:
+        required_roles.add("avatar")
+    if requires_illustration:
+        required_roles.add("illustration")
+    missing = required_roles - roles
     if missing:
         errors.append(f"{scene_id}: missing safe-box roles {sorted(missing)}")
     avatar = next((box for box in boxes if isinstance(box, dict) and box.get("role") == "avatar"), None)
-    if avatar:
-        if avatar.get("shape") != "circle":
-            errors.append(f"{scene_id}: avatar safe zone must be a circle")
-        if not (
-            math.isclose(float(avatar.get("x", -1)), 42.0, abs_tol=0.5)
-            and math.isclose(float(avatar.get("y", -1)), 752.0, abs_tol=0.5)
-            and math.isclose(float(avatar.get("diameter", avatar.get("size", -1))), 300.0, abs_tol=0.5)
-        ):
-            errors.append(f"{scene_id}: avatar circle must be x=42 y=752 diameter=300")
+    if avatar_enabled and avatar:
+        canvas_height = float(get_in(pipeline_profile, "layout.canvas.height", 0))
+        expected_shape = str(avatar_policy.get("shape", "circle"))
+        expected_size = float(avatar_policy.get("size", 0))
+        expected_x = float(avatar_policy.get("x", 0))
+        expected_y = float(
+            avatar_policy.get(
+                "y",
+                canvas_height - float(avatar_policy.get("bottom", 0)) - expected_size,
+            )
+        )
+        if avatar.get("shape") != expected_shape:
+            errors.append(f"{scene_id}: avatar safe-zone shape does not match profile")
+        position_matches = (
+            math.isclose(float(avatar.get("x", -1)), expected_x, abs_tol=0.5)
+            and math.isclose(float(avatar.get("y", -1)), expected_y, abs_tol=0.5)
+        )
+        if expected_shape == "circle":
+            dimensions_match = math.isclose(
+                float(avatar.get("diameter", avatar.get("size", -1))), expected_size, abs_tol=0.5
+            )
+        else:
+            dimensions_match = (
+                math.isclose(
+                    float(avatar.get("width", -1)),
+                    float(avatar_policy.get("width", expected_size)),
+                    abs_tol=0.5,
+                )
+                and math.isclose(
+                    float(avatar.get("height", -1)),
+                    float(avatar_policy.get("height", expected_size)),
+                    abs_tol=0.5,
+                )
+            )
+        if not position_matches or not dimensions_match:
+            errors.append(f"{scene_id}: avatar safe zone does not match resolved profile")
         for box in boxes:
             if not isinstance(box, dict) or box is avatar or box.get("shape") != "rect":
                 continue
-            if box.get("protected") and circle_rect_intersects(avatar, box):
-                errors.append(f"{scene_id}: protected {box.get('role')} box intersects avatar circle")
+            overlap = (
+                circle_rect_intersects(avatar, box)
+                if expected_shape == "circle"
+                else rects_intersect(avatar, box)
+            )
+            if box.get("protected") and overlap:
+                errors.append(f"{scene_id}: protected {box.get('role')} box intersects avatar safe zone")
     protected_rects = [
         box for box in boxes
         if isinstance(box, dict) and box.get("shape") == "rect" and box.get("protected")
@@ -94,8 +149,9 @@ def validate_boxes(scene_id: str, boxes: Any, errors: list[str], warnings: list[
             if pair == {"title", "illustration"} or pair == {"caption", "illustration"} or pair == {"title", "caption"}:
                 if rects_intersect(left, right):
                     errors.append(f"{scene_id}: protected boxes overlap: {left.get('role')} and {right.get('role')}")
-    if not any(isinstance(box, dict) and box.get("role") == "caption" and float(box.get("x", 0)) >= 368 for box in boxes):
-        warnings.append(f"{scene_id}: caption safe box should start at x>=368")
+    caption_x_min = float(get_in(pipeline_profile, "layout.caption_safe_x_min", 0.0) or 0.0)
+    if not any(isinstance(box, dict) and box.get("role") == "caption" and float(box.get("x", 0)) >= caption_x_min for box in boxes):
+        warnings.append(f"{scene_id}: caption safe box should start at x>={caption_x_min:g}")
 
 
 def concurrent_count(events: list[tuple[float, float, str]], start: float, end: float, kind: str) -> int:
@@ -118,6 +174,7 @@ def main() -> int:
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--scenes", type=Path)
     parser.add_argument("--timeline", type=Path)
+    parser.add_argument("--resolved-profile", type=Path, required=True)
     parser.add_argument("--require-approved", action="store_true")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
@@ -126,6 +183,9 @@ def main() -> int:
     if not plan_path.is_file():
         raise FileNotFoundError(plan_path)
     plan = load_json(plan_path)
+    pipeline_profile, resolved_profile_path = load_resolved_profile(
+        args.resolved_profile, None, required=True
+    )
     script_dir = Path(__file__).resolve().parent
     catalog_path = (args.catalog or script_dir.parent / "references/motion-catalog.json").expanduser().resolve()
     catalog = load_json(catalog_path)
@@ -146,12 +206,22 @@ def main() -> int:
         errors.append("status must be draft or approved")
     if args.require_approved and status != "approved":
         errors.append("plan is not approved")
+    configuration = plan.get("configuration", {}) if isinstance(plan.get("configuration"), dict) else {}
+    configuration_sha = get_in(pipeline_profile, "_meta.profile_sha256")
+    if configuration.get("sha256") != configuration_sha:
+        errors.append("motion plan is stale for the resolved profile")
     profile_id = str(plan.get("profile", {}).get("id", ""))
     if profile_id not in catalog.get("profiles", {}):
         errors.append(f"unknown profile: {profile_id or '<missing>'}")
         profile: dict[str, Any] = {}
     else:
-        profile = catalog["profiles"][profile_id]
+        selectable = get_in(pipeline_profile, "motion.selectable_profiles", [])
+        if isinstance(selectable, list) and selectable and profile_id not in selectable:
+            errors.append(f"motion preset is not enabled by resolved profile: {profile_id}")
+        profile = resolve_motion_preset(catalog, pipeline_profile, profile_id)
+        declared_budgets = plan.get("profile", {}).get("budgets")
+        if declared_budgets != profile:
+            errors.append("effective motion budgets changed after plan generation")
     declared_catalog_hash = str(plan.get("profile", {}).get("catalog_sha256", ""))
     actual_catalog_hash = file_sha256(catalog_path)
     if declared_catalog_hash and declared_catalog_hash != actual_catalog_hash:
@@ -198,7 +268,10 @@ def main() -> int:
 
     clock = plan.get("clock", {}) if isinstance(plan.get("clock"), dict) else {}
     sample_rate = int(clock.get("sample_rate", 48000))
-    fps = int(clock.get("fps", 30))
+    fps = int(clock.get("fps", get_in(pipeline_profile, "layout.canvas.fps", 30)))
+    configured_fps = int(get_in(pipeline_profile, "layout.canvas.fps", fps))
+    if fps != configured_fps:
+        errors.append("motion-plan FPS does not match resolved profile")
     grammar = plan.get("transition_grammar", [])
     if not isinstance(grammar, list) or not grammar:
         errors.append("transition_grammar must be a non-empty list")
@@ -217,7 +290,13 @@ def main() -> int:
     } if profile else set()
     runtime_implemented: set[str] = set()
     layout_catalog = catalog.get("layout_variants", {})
-    layout_policy = catalog.get("layout_policy", {})
+    layout_policy = resolve_layout_policy(catalog, pipeline_profile)
+    declared_layout_policy = plan.get("profile", {}).get("layout_policy")
+    if declared_layout_policy != layout_policy:
+        errors.append("effective layout policy changed after plan generation")
+    allowed_layouts = {
+        str(item) for item in layout_policy.get("variants", [])
+    } if isinstance(layout_policy.get("variants"), list) else set(layout_catalog)
     layout_ids: list[str] = []
     if profile_id in {"premium-balanced", "cinematic"}:
         audit_source = plan.get("sources", {}).get("runtime_audit", {}) if isinstance(plan.get("sources"), dict) else {}
@@ -260,6 +339,8 @@ def main() -> int:
         if not isinstance(layout_spec, dict):
             errors.append(f"{scene_id}: unknown layout_variant={layout_id or '<missing>'}")
         else:
+            if allowed_layouts and layout_id not in allowed_layouts:
+                errors.append(f"{scene_id}: layout {layout_id} is not allowed by resolved profile")
             if layout_ids and layout_policy.get("forbid_adjacent_repeat") and layout_ids[-1] == layout_id:
                 errors.append(f"{scene_id}: adjacent scenes may not repeat layout {layout_id}")
             if layout_spec.get("requires_asset") and not scene.get("asset_refs"):
@@ -269,7 +350,14 @@ def main() -> int:
             if not str(scene.get("layout_selection_reason", "")).strip():
                 errors.append(f"{scene_id}: missing layout_selection_reason")
         layout_ids.append(layout_id)
-        validate_boxes(scene_id, scene.get("safe_boxes"), errors, warnings)
+        validate_boxes(
+            scene_id,
+            scene.get("safe_boxes"),
+            errors,
+            warnings,
+            pipeline_profile,
+            requires_illustration=bool(scene.get("asset_refs")),
+        )
 
         hero = scene.get("hero_motion")
         if not isinstance(hero, dict) or not str(hero.get("id", "")):
@@ -493,6 +581,11 @@ def main() -> int:
         "status": "pass" if not errors else "fail",
         "plan": {"path": str(plan_path), "sha256": file_sha256(plan_path), "approval_status": status},
         "profile_id": profile_id,
+        "configuration": {
+            "path": str(resolved_profile_path),
+            "id": pipeline_profile.get("profile_id"),
+            "sha256": configuration_sha,
+        },
         "errors": errors,
         "warnings": warnings,
         "metrics": metrics,

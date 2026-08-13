@@ -10,8 +10,10 @@ import math
 from pathlib import Path
 from typing import Any
 
+from profile_config import get_in, load_resolved_profile
 
-REQUIRED_ROLES = {"title", "content", "caption", "avatar"}
+
+REQUIRED_ROLES = {"title", "content", "caption"}
 OVERLAP_EXEMPT_ROLES = {"background", "transition"}
 
 
@@ -74,7 +76,10 @@ def circle_rect(circle: dict[str, Any], rect: dict[str, Any]) -> bool:
 
 def intersects(left: dict[str, Any], right: dict[str, Any]) -> bool:
     left_box, right_box = box(left), box(right)
-    shapes = (left_box.get("shape"), right_box.get("shape"))
+    def geometry_shape(value: Any) -> Any:
+        return "rect" if value in {"rect", "rectangle", "rounded-rectangle"} else value
+
+    shapes = (geometry_shape(left_box.get("shape")), geometry_shape(right_box.get("shape")))
     if shapes == ("rect", "rect"):
         return rect_rect(left_box, right_box)
     if shapes == ("circle", "circle"):
@@ -91,7 +96,7 @@ def within_canvas(element: dict[str, Any], width: float, height: float) -> bool:
     x, y = float(value.get("x", -1)), float(value.get("y", -1))
     if value.get("shape") == "circle":
         w = h = float(value.get("diameter", value.get("size", 0)))
-    elif value.get("shape") == "rect":
+    elif value.get("shape") in {"rect", "rectangle", "rounded-rectangle"}:
         w, h = float(value.get("width", 0)), float(value.get("height", 0))
     else:
         return False
@@ -102,6 +107,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layout", type=Path, required=True)
     parser.add_argument("--motion-plan", type=Path, required=True)
+    parser.add_argument("--profile", type=Path, required=True, help="resolved profile JSON")
     parser.add_argument("--require-approved", action="store_true")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
@@ -110,6 +116,14 @@ def main() -> int:
     motion_path = args.motion_plan.expanduser().resolve()
     layout = load_json(layout_path)
     motion = load_json(motion_path)
+    profile, profile_path = load_resolved_profile(args.profile, None, required=True)
+    configured_canvas = get_in(profile, "layout.canvas", {})
+    avatar_policy = get_in(profile, "layout.avatar_safe_zone", {})
+    avatar_policy = avatar_policy if isinstance(avatar_policy, dict) else {}
+    avatar_enabled = bool(avatar_policy.get("enabled"))
+    caption_x_min = float(get_in(profile, "layout.caption_safe_x_min", 0.0) or 0.0)
+    fps = float(configured_canvas.get("fps", 30.0))
+    frame_tolerance = 1.0 / fps
     report_path = (args.report or layout_path.with_name("layout-qc.json")).expanduser().resolve()
     errors: list[str] = []
     warnings: list[str] = []
@@ -125,8 +139,13 @@ def main() -> int:
         errors.append("approved layout-boxes.json must record review.approved_by")
     canvas = layout.get("canvas", {}) if isinstance(layout.get("canvas"), dict) else {}
     width, height = float(canvas.get("width", 0)), float(canvas.get("height", 0))
-    if not math.isclose(width, 1920, abs_tol=0.5) or not math.isclose(height, 1080, abs_tol=0.5):
-        errors.append("layout canvas must be 1920x1080")
+    expected_width = float(configured_canvas.get("width", 0))
+    expected_height = float(configured_canvas.get("height", 0))
+    if not math.isclose(width, expected_width, abs_tol=0.5) or not math.isclose(height, expected_height, abs_tol=0.5):
+        errors.append(f"layout canvas must match profile: {expected_width:g}x{expected_height:g}")
+    profile_sha = get_in(profile, "_meta.profile_sha256")
+    if layout.get("profile", {}).get("sha256") != profile_sha:
+        errors.append("layout-boxes.json is stale for the resolved profile")
     if layout.get("motion_plan", {}).get("sha256") != sha256(motion_path):
         errors.append("layout-boxes.json is stale for the current motion plan")
 
@@ -145,16 +164,19 @@ def main() -> int:
         scene_id = str(scene.get("id", "<missing>"))
         planned = motion_by_id.get(scene_id, {})
         start, end = float(scene.get("start_s", 0)), float(scene.get("end_s", 0))
-        if not math.isclose(start, float(planned.get("start_s", -1)), abs_tol=1 / 30):
+        if not math.isclose(start, float(planned.get("start_s", -1)), abs_tol=frame_tolerance):
             errors.append(f"{scene_id}: start_s does not match motion plan")
-        if not math.isclose(end, float(planned.get("end_s", -1)), abs_tol=1 / 30):
+        if not math.isclose(end, float(planned.get("end_s", -1)), abs_tol=frame_tolerance):
             errors.append(f"{scene_id}: end_s does not match motion plan")
         elements = scene.get("elements", [])
         if not isinstance(elements, list):
             errors.append(f"{scene_id}: elements must be a list")
             continue
         roles = {str(item.get("role")) for item in elements if isinstance(item, dict)}
-        missing = REQUIRED_ROLES - roles
+        required_roles = set(REQUIRED_ROLES)
+        if avatar_enabled:
+            required_roles.add("avatar")
+        missing = required_roles - roles
         if missing:
             errors.append(f"{scene_id}: missing required roles {sorted(missing)}")
         ids = [str(item.get("id")) for item in elements if isinstance(item, dict)]
@@ -196,16 +218,46 @@ def main() -> int:
 
         caption = next((item for item in elements if isinstance(item, dict) and item.get("role") == "caption"), None)
         avatar = next((item for item in elements if isinstance(item, dict) and item.get("role") == "avatar"), None)
-        if not caption or float(caption.get("x", 0)) < 368:
-            errors.append(f"{scene_id}: caption region must start at x>=368")
-        if not avatar or avatar.get("shape") != "circle":
-            errors.append(f"{scene_id}: missing circular avatar safe zone")
-        elif not (
-            math.isclose(float(avatar.get("x", -1)), 42, abs_tol=0.5)
-            and math.isclose(float(avatar.get("y", -1)), 752, abs_tol=0.5)
-            and math.isclose(float(avatar.get("diameter", -1)), 300, abs_tol=0.5)
-        ):
-            errors.append(f"{scene_id}: avatar circle must be x=42 y=752 diameter=300")
+        if not caption or float(caption.get("x", 0)) < caption_x_min:
+            errors.append(f"{scene_id}: caption region must start at x>={caption_x_min:g}")
+        if avatar_enabled:
+            expected_shape = str(avatar_policy.get("shape", "circle"))
+            expected_size = float(avatar_policy.get("size", 0))
+            expected_x = float(avatar_policy.get("x", 0))
+            expected_y = float(
+                avatar_policy.get(
+                    "y",
+                    height - float(avatar_policy.get("bottom", 0)) - expected_size,
+                )
+            )
+            if not avatar or avatar.get("shape") != expected_shape:
+                errors.append(f"{scene_id}: missing avatar safe zone with shape={expected_shape}")
+            else:
+                position_matches = (
+                    math.isclose(float(avatar.get("x", -1)), expected_x, abs_tol=0.5)
+                    and math.isclose(float(avatar.get("y", -1)), expected_y, abs_tol=0.5)
+                )
+                if expected_shape == "circle":
+                    dimensions_match = math.isclose(
+                        float(avatar.get("diameter", avatar.get("size", -1))),
+                        expected_size,
+                        abs_tol=0.5,
+                    )
+                else:
+                    dimensions_match = (
+                        math.isclose(
+                            float(avatar.get("width", -1)),
+                            float(avatar_policy.get("width", expected_size)),
+                            abs_tol=0.5,
+                        )
+                        and math.isclose(
+                            float(avatar.get("height", -1)),
+                            float(avatar_policy.get("height", expected_size)),
+                            abs_tol=0.5,
+                        )
+                    )
+                if not position_matches or not dimensions_match:
+                    errors.append(f"{scene_id}: avatar safe zone does not match resolved profile")
 
         for element in elements:
             if not isinstance(element, dict):
@@ -220,7 +272,7 @@ def main() -> int:
                 errors.append(f"{scene_id}/{element_id}: geometry or swept_bbox leaves the canvas")
             active_start = float(element.get("start_s", start))
             active_end = float(element.get("end_s", end))
-            if active_start < start - 1 / 30 or active_end > end + 1 / 30 or active_end <= active_start:
+            if active_start < start - frame_tolerance or active_end > end + frame_tolerance or active_end <= active_start:
                 errors.append(f"{scene_id}/{element_id}: active time leaves the scene")
             if element.get("role") == "transition" and caption:
                 if int(element.get("z_index", 0)) >= int(caption.get("z_index", 0)):
@@ -266,6 +318,7 @@ def main() -> int:
         "status": "pass" if not errors else "fail",
         "layout": {"path": str(layout_path), "sha256": sha256(layout_path), "approval_status": layout.get("status")},
         "motion_plan": {"path": str(motion_path), "sha256": sha256(motion_path)},
+        "profile": {"path": str(profile_path), "id": profile.get("profile_id"), "sha256": profile_sha},
         "errors": errors,
         "warnings": warnings,
         "metrics": {"scenes": len(layout_scenes), "protected_overlaps": overlap_count},

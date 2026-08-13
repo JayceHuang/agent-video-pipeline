@@ -12,10 +12,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import statistics
 from pathlib import Path
 from typing import Any
+
+from profile_config import get_in, load_resolved_profile
 
 # Participates in cache keys instead of the script file SHA; bump only when
 # planning logic meaningfully changes.
@@ -35,7 +36,7 @@ DEFAULT_ESTIMATES_S = {
 
 # Substrings used to map pipeline-timings stage names onto planner buckets.
 STAGE_KEYWORDS = {
-    "visual_assets": ("illustration", "visual", "xiaomu", "插图"),
+    "visual_assets": ("illustration", "visual", "imagegen", "插图"),
     "tts": ("tts", "voxcpm", "candidate", "语音"),
     "alignment_audio_qc": ("align", "boundary", "stability", "audio_qc", "对齐"),
     "motion_layout_check": ("motion", "layout", "storyboard", "hyperframes", "check", "动效", "布局"),
@@ -89,24 +90,24 @@ def effective_chars(text: str) -> int:
     return sum(1 for char in text if char not in PUNCT and not char.isspace())
 
 
-def profile_cpm_ranges(profile_path: Path) -> list[tuple[float, tuple[float, float]]]:
-    """Read (target, allowed_range) pairs from default-profile.yaml without PyYAML."""
+def profile_cpm_ranges(profile: dict[str, Any]) -> list[tuple[float, tuple[float, float]]]:
+    """Read configured nominal CPM and acceptance ranges."""
     pairs: list[tuple[float, tuple[float, float]]] = []
-    if not profile_path.is_file():
-        return pairs
-    text = profile_path.read_text(encoding="utf-8")
-    pattern = re.compile(
-        r"(?:nominal_target_effective_chinese_chars_per_minute|"
-        r"target_effective_chinese_chars_per_minute):\s*([0-9.]+)"
-        r"[\s\S]{0,200}?allowed_range:\s*\[\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\]"
-    )
-    for match in pattern.finditer(text):
-        pairs.append((float(match.group(1)), (float(match.group(2)), float(match.group(3)))))
+    target = get_in(profile, "voice.target_effective_chinese_chars_per_minute")
+    allowed = get_in(profile, "voice.allowed_range")
+    if isinstance(target, (int, float)) and isinstance(allowed, list) and len(allowed) == 2:
+        pairs.append((float(target), (float(allowed[0]), float(allowed[1]))))
+    fast = get_in(profile, "voice.fast_trial", {})
+    if isinstance(fast, dict):
+        target = fast.get("nominal_target_effective_chinese_chars_per_minute")
+        allowed = fast.get("allowed_range")
+        if isinstance(target, (int, float)) and isinstance(allowed, list) and len(allowed) == 2:
+            pairs.append((float(target), (float(allowed[0]), float(allowed[1]))))
     return pairs
 
 
-def allowed_range_for(target: float, profile_path: Path) -> tuple[tuple[float, float], str]:
-    for nominal, allowed in profile_cpm_ranges(profile_path):
+def allowed_range_for(target: float, profile: dict[str, Any]) -> tuple[tuple[float, float], str]:
+    for nominal, allowed in profile_cpm_ranges(profile):
         if abs(target - nominal) < 1e-6:
             return allowed, f"profile range for nominal {nominal:.0f}"
     fallback = (target - 10.0, target + 10.0) if target >= 320 else (target - 5.0, target + 5.0)
@@ -131,11 +132,16 @@ def history_estimates(project: Path) -> dict[str, float]:
     return {bucket: statistics.median(rows) for bucket, rows in samples.items() if rows}
 
 
-def visual_cache(project: Path) -> tuple[bool, str]:
+def visual_cache(project: Path, profile: dict[str, Any]) -> tuple[bool, str]:
+    policy = get_in(profile, "layout.illustration_skill", {})
+    policy = policy if isinstance(policy, dict) else {}
+    if not policy.get("enabled") and not policy.get("required"):
+        return True, "visual provider disabled by resolved profile"
     doc = load(project / "visual-assets.json")
     assets = doc.get("assets", [])
-    if doc.get("skill_invoked") is not True or len(assets) < 4:
-        return False, "missing approved 4+ shot xiaomu asset set"
+    minimum = int((policy.get("asset_count_range") or [0, 999])[0])
+    if doc.get("skill_invoked") is not True or len(assets) < minimum:
+        return False, f"missing approved visual asset set (minimum {minimum})"
     for row in assets:
         path = project / str(row.get("path", ""))
         if not path.is_file() or row.get("sha256") != sha256(path):
@@ -249,14 +255,11 @@ def main() -> int:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--target-cpm", type=float, required=True)
     parser.add_argument("--duration-target-s", type=float)
-    parser.add_argument(
-        "--profile",
-        type=Path,
-        default=Path(__file__).resolve().parent.parent / "references/default-profile.yaml",
-    )
+    parser.add_argument("--profile", type=Path, help="resolved profile JSON")
     parser.add_argument("--output", default=".pipeline/fast-production-plan.json")
     args = parser.parse_args()
     project = args.project.expanduser().resolve()
+    profile, profile_path = load_resolved_profile(args.profile, project, required=True)
     scenes_path = project / "scenes.json"
     scenes = load(scenes_path)
     text = narration_text(scenes)
@@ -264,10 +267,10 @@ def main() -> int:
     if not chars:
         raise ValueError("scenes.json has no narration text")
     target = float(args.target_cpm)
-    allowed, allowed_source = allowed_range_for(target, args.profile)
+    allowed, allowed_source = allowed_range_for(target, profile)
     predicted = chars * 60.0 / target
 
-    visual_ok, visual_reason = visual_cache(project)
+    visual_ok, visual_reason = visual_cache(project, profile)
     audio_ok, audio_reason = audio_cache(project, allowed, text)
     raw_ok, raw_reason = raw_candidate_cache(project, text)
     motion_ok, motion_reason = motion_cache(project)
@@ -329,6 +332,11 @@ def main() -> int:
         "schema_version": 2,
         "logic_version": LOGIC_VERSION,
         "project": str(project),
+        "profile": {
+            "path": str(profile_path),
+            "id": profile.get("profile_id"),
+            "sha256": get_in(profile, "_meta.profile_sha256"),
+        },
         "target_cpm": target,
         "allowed_cpm_range": list(allowed),
         "allowed_cpm_range_source": allowed_source,

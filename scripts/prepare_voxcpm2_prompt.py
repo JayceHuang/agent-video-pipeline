@@ -10,19 +10,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-DEFAULT_SOURCE = Path(
-    "/Users/jaycehuang/Library/CloudStorage/SynologyDrive-Obsidian/"
-    "66_自媒体/木哥原始音频/木哥音频.mp3"
-)
-DEFAULT_OUTPUT = Path(
-    "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/"
-    "audio/muge-golden-prompt-v1.wav"
-)
-DEFAULT_TEXT = (
-    "大家在去做GEO的时候，为了让所有的AI平台都去推荐你，"
-    "一定是全平台的分发而不是只能铺一个渠道。"
-)
+from profile_config import get_in, load_resolved_profile
 
 
 def sha256(path: Path) -> str:
@@ -73,6 +61,9 @@ def verify_frozen_prompt(
     start: float,
     requested_duration: float,
     prompt_text: str,
+    sample_rate: int,
+    channels: int,
+    codec: str,
 ) -> None:
     problems = []
     if not output.is_file():
@@ -99,9 +90,9 @@ def verify_frozen_prompt(
         "source_sha256": sha256(source),
         "prompt_text": prompt_text,
         "prompt_wav_sha256": sha256(output),
-        "sample_rate": 48000,
-        "channels": 1,
-        "codec": "pcm_s16le",
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "codec": codec,
     }
     for field, actual in expected_values.items():
         if payload.get(field) != actual:
@@ -158,23 +149,44 @@ def verify_frozen_prompt(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--start", type=float, default=310.95)
-    parser.add_argument("--duration", type=float, default=8.20)
-    parser.add_argument("--prompt-text", default=DEFAULT_TEXT)
+    parser.add_argument("--source", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--start", type=float)
+    parser.add_argument("--duration", type=float)
+    parser.add_argument("--prompt-text")
+    parser.add_argument("--sample-rate", type=int)
+    parser.add_argument("--channels", type=int)
+    parser.add_argument("--codec")
+    parser.add_argument("--profile", type=Path, help="resolved profile JSON")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--force", action="store_true")
     mode.add_argument("--verify", action="store_true")
     args = parser.parse_args()
 
-    source = args.source.expanduser().resolve()
-    output = args.output.expanduser().resolve()
+    profile, profile_path = load_resolved_profile(args.profile, None, required=args.profile is not None)
+    extract = get_in(profile, "voice.voice_reference_extract", {})
+    extract = extract if isinstance(extract, dict) else {}
+    source_value = args.source or get_in(profile, "voice.voice_reference_source")
+    output_value = args.output or get_in(profile, "voice.voice_prompt_wav")
+    prompt_value = args.prompt_text or get_in(profile, "voice.voice_prompt_text")
+    start = float(args.start if args.start is not None else extract.get("start_s", 0.0))
+    requested_duration = float(
+        args.duration if args.duration is not None else extract.get("duration_s", 0.0)
+    )
+    sample_rate = int(args.sample_rate or extract.get("sample_rate", 48000))
+    channels = int(args.channels or extract.get("channels", 1))
+    codec = str(args.codec or extract.get("codec", "pcm_s16le"))
+    if not source_value or not output_value or not prompt_value:
+        raise ValueError(
+            "voice source, prompt output, and prompt text must come from CLI or a resolved profile"
+        )
+    source = Path(str(source_value)).expanduser().absolute()
+    output = Path(str(output_value)).expanduser().absolute()
     manifest = output.with_suffix(".json")
-    prompt_text = args.prompt_text.strip()
+    prompt_text = str(prompt_value).strip()
     if not source.is_file():
         raise FileNotFoundError(source)
-    if not 6.0 <= args.duration <= 15.0:
+    if not 6.0 <= requested_duration <= 15.0:
         raise ValueError("golden prompt must be 6-15 seconds")
     if not prompt_text.endswith(("。", "！", "？", ".", "!", "?")):
         raise ValueError("prompt text must be a complete sentence ending in punctuation")
@@ -183,9 +195,12 @@ def main() -> int:
             source,
             output,
             manifest,
-            args.start,
-            args.duration,
+            start,
+            requested_duration,
             prompt_text,
+            sample_rate,
+            channels,
+            codec,
         )
         print(f"verified: {output}")
         return 0
@@ -202,28 +217,28 @@ def main() -> int:
             "error",
             "-y",
             "-ss",
-            f"{args.start:.6f}",
+            f"{start:.6f}",
             "-t",
-            f"{args.duration:.6f}",
+            f"{requested_duration:.6f}",
             "-i",
             str(source),
             "-map_metadata",
             "-1",
             "-ar",
-            "48000",
+            str(sample_rate),
             "-ac",
-            "1",
+            str(channels),
             "-c:a",
-            "pcm_s16le",
+            codec,
             str(partial),
         ],
         check=True,
     )
     actual_duration = duration(partial)
-    if abs(actual_duration - args.duration) > 0.05:
+    if abs(actual_duration - requested_duration) > 0.05:
         partial.unlink(missing_ok=True)
         raise RuntimeError(
-            f"extracted duration {actual_duration:.3f}s differs from requested {args.duration:.3f}s"
+            f"extracted duration {actual_duration:.3f}s differs from requested {requested_duration:.3f}s"
         )
     partial.replace(output)
 
@@ -237,12 +252,17 @@ def main() -> int:
         "reference_wav_path": str(output),
         "prompt_wav_sha256": sha256(output),
         "prompt_text": prompt_text,
-        "extract_start_s": args.start,
-        "extract_duration_s": args.duration,
+        "extract_start_s": start,
+        "extract_duration_s": requested_duration,
         "actual_duration_s": round(actual_duration, 6),
-        "sample_rate": 48000,
-        "channels": 1,
-        "codec": "pcm_s16le",
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "codec": codec,
+        "profile": {
+            "path": str(profile_path) if profile_path else None,
+            "id": profile.get("profile_id") if profile else None,
+            "sha256": get_in(profile, "_meta.profile_sha256") if profile else None,
+        },
     }
     manifest_partial = manifest.with_name(manifest.name + ".part")
     manifest_partial.write_text(

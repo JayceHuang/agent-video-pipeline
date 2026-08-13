@@ -9,9 +9,12 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from profile_config import get_in, load_resolved_profile
 
 
 def atomic_text(path: Path, text: str) -> None:
@@ -109,34 +112,54 @@ def extract_cover(video: Path, output_dir: Path, at: float, *, force: bool = Fal
     return png, jpg, False
 
 
-def default_copy(title: str, summary: str, tags: list[str]) -> dict[str, dict[str, Any]]:
+def render_template(value: Any, context: dict[str, Any], field: str) -> str:
+    try:
+        return str(value).format_map(context)
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"invalid publishing template {field}: {exc}") from exc
+
+
+def configured_copy(
+    title: str,
+    summary: str,
+    tags: list[str],
+    platforms: list[str],
+    templates: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
     tag_text = " ".join(tags)
-    return {
-        "抖音": {
-            "title": title,
-            "body": f"{summary}\n\n用一条视频把关键概念讲清楚。",
-            "tags": tags[:8],
-        },
-        "小红书": {
-            "title": f"{title}｜一条视频讲明白",
-            "body": f"{summary}\n\n适合刚开始学习 AI 的朋友，建议收藏后再看一遍。\n\n{tag_text}",
-            "tags": tags[:10],
-        },
-        "视频号": {
-            "title": title,
-            "body": f"{summary}\n\n本集按教程节奏拆解，方便跟着视频逐步理解。",
-            "tags": tags[:6],
-        },
-    }
+    context = {"title": title, "summary": summary, "tag_text": tag_text}
+    result: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for platform in platforms:
+        raw = templates.get(platform, {}) if isinstance(templates, dict) else {}
+        template = raw if isinstance(raw, dict) else {}
+        display_name = str(template.get("display_name", platform))
+        limit = template.get("tag_limit")
+        selected_tags = tags
+        if isinstance(limit, int) and limit >= 0:
+            selected_tags = tags[:limit]
+        result[display_name] = {
+            "title": render_template(template.get("title", "{title}"), context, f"{platform}.title"),
+            "body": render_template(template.get("body", "{summary}"), context, f"{platform}.body"),
+            "tags": selected_tags,
+        }
+        order.append(display_name)
+    return result, order
 
 
-def copy_markdown(title: str, copy: dict[str, dict[str, Any]]) -> str:
+def copy_markdown(
+    title: str,
+    copy: dict[str, dict[str, Any]],
+    display_order: list[str],
+) -> str:
     lines = ["# 发布文案", "", f"主题：{title}", "", "> 默认只生成素材，不自动发布。", ""]
-    for platform in ("抖音", "小红书", "视频号"):
-        item = copy.get(platform, {})
+    if not display_order:
+        display_order = list(copy)
+    for platform_name in display_order:
+        item = copy.get(platform_name, {})
         tags = item.get("tags", [])
         lines.extend([
-            f"## {platform}", "", f"**标题**：{item.get('title', title)}", "",
+            f"## {platform_name}", "", f"**标题**：{item.get('title', title)}", "",
             "**正文**：", "", str(item.get("body", "")).rstrip(), "",
             "**标签**：" + (" ".join(str(tag) for tag in tags) if tags else "（待补充）"), "",
         ])
@@ -144,7 +167,7 @@ def copy_markdown(title: str, copy: dict[str, dict[str, Any]]) -> str:
 
 
 def load_visual_assets(output_dir: Path) -> dict[str, Any] | None:
-    """Read the project-level xiaomu decision without forcing image generation."""
+    """Read the project-level visual-provider decision without forcing generation."""
     # Prefer the project manifest: the co-located render copy can belong to an
     # older finalization and must not silently override the current plan.
     for candidate in (output_dir.parent / "visual-assets.json", output_dir / "visual-assets.json"):
@@ -363,26 +386,17 @@ def load_audio_pipeline_assets(output_dir: Path) -> dict[str, Any] | None:
                         ),
                     },
                     "prompt": {
-                        "path": prompt.get("path", voice_manifest.get("prompt_path")),
                         "sha256": prompt.get("sha256", voice_manifest.get("prompt_sha256")),
-                        "text": prompt.get("text", voice_manifest.get("prompt_text")),
-                        "manifest_path": prompt.get(
-                            "manifest_path", voice_manifest.get("prompt_manifest_path")
-                        ),
                         "manifest_sha256": prompt.get(
                             "manifest_sha256", voice_manifest.get("prompt_manifest_sha256")
                         ),
                     },
                     "reference": {
-                        "path": reference.get(
-                            "path", voice_manifest.get("reference_path")
-                        ),
                         "sha256": reference.get(
                             "sha256", voice_manifest.get("reference_sha256")
                         ),
                     },
                     "profile": {
-                        "path": profile.get("path", voice_manifest.get("profile_path")),
                         "sha256": profile.get(
                             "sha256", voice_manifest.get("profile_sha256")
                         ),
@@ -413,14 +427,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--title", default="Agent 教程视频")
-    parser.add_argument("--summary", default="这是一集中文 AI 教程视频。")
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--summary", required=True)
     parser.add_argument("--visual-description", default="")
     parser.add_argument("--frame-time", type=float)
     parser.add_argument("--job-id", default="")
-    parser.add_argument("--tags", default="#AI工具,#Agent,#人工智能,#教程")
-    parser.add_argument("--copy-json", type=Path, help="Optional JSON with 抖音/小红书/视频号 copy")
+    parser.add_argument("--tags", help="Comma-separated override; defaults to publishing.tags")
+    parser.add_argument("--copy-json", type=Path, help="Optional platform-copy JSON override")
     parser.add_argument("--force-cover", action="store_true", help="Explicitly replace an existing local cover")
+    parser.add_argument("--profile", type=Path, required=True, help="resolved profile JSON")
     args = parser.parse_args()
 
     video = args.video.expanduser().resolve()
@@ -428,6 +443,23 @@ def main() -> int:
         raise FileNotFoundError(video)
     output_dir = (args.output_dir or video.parent).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    profile, profile_path = load_resolved_profile(args.profile, output_dir.parent, required=True)
+    visual_validator = Path(__file__).resolve().with_name("validate_visual_assets.py")
+    visual_gate = subprocess.run(
+        [
+            sys.executable,
+            str(visual_validator),
+            "--project",
+            str(output_dir.parent),
+            "--profile",
+            str(profile_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if visual_gate.returncode != 0:
+        details = (visual_gate.stderr or visual_gate.stdout).strip()
+        raise RuntimeError(f"visual asset gate must pass before finalization: {details}")
 
     stats = probe(video)
     at = frame_time(stats["duration_s"], args.frame_time)
@@ -443,10 +475,45 @@ def main() -> int:
             except (OSError, ValueError, TypeError):
                 pass
 
-    tags = [tag.strip() for tag in args.tags.split(",") if tag.strip()]
-    copy = json.loads(args.copy_json.read_text(encoding="utf-8")) if args.copy_json else default_copy(args.title, args.summary, tags)
-    visual = args.visual_description or f"从最终视频第 {at:.3f} 秒提取的横屏教程画面，画面内容应与视频主题和标题一致。"
-    alt = f"{args.title}：{visual}"
+    configured_tags = get_in(profile, "publishing.tags", [])
+    tags = (
+        [tag.strip() for tag in args.tags.split(",") if tag.strip()]
+        if args.tags is not None
+        else [str(tag) for tag in configured_tags if str(tag).strip()]
+        if isinstance(configured_tags, list)
+        else []
+    )
+    configured_platforms = get_in(profile, "publishing.platforms", [])
+    platforms = [str(item) for item in configured_platforms] if isinstance(configured_platforms, list) else []
+    templates = get_in(profile, "publishing.copy_templates", {})
+    templates = templates if isinstance(templates, dict) else {}
+    if args.copy_json:
+        copy = json.loads(args.copy_json.read_text(encoding="utf-8"))
+        if not isinstance(copy, dict):
+            raise ValueError("--copy-json must contain an object")
+        display_order = [
+            str(templates.get(platform, {}).get("display_name", platform))
+            if isinstance(templates.get(platform, {}), dict) else platform
+            for platform in platforms
+        ]
+    else:
+        copy, display_order = configured_copy(args.title, args.summary, tags, platforms, templates)
+    cover_context = {
+        "title": args.title,
+        "summary": args.summary,
+        "frame_time_s": at,
+        "cover_style": get_in(profile, "publishing.cover_style", "neutral"),
+    }
+    visual = args.visual_description or render_template(
+        get_in(profile, "publishing.cover_description_template", "Frame at {frame_time_s:.3f} seconds."),
+        cover_context,
+        "cover_description_template",
+    )
+    alt = render_template(
+        get_in(profile, "publishing.alt_text_template", "{title}: {visual_description}"),
+        {**cover_context, "visual_description": visual},
+        "alt_text_template",
+    )
     description_path = output_dir / "cover-description.md"
     if not cover_reused or not description_path.is_file():
         description = "\n".join([
@@ -455,13 +522,20 @@ def main() -> int:
             "## 视觉描述", "", visual, "",
             "## Alt text", "", alt, "",
             "## 构图与安全区", "",
-            "- 画布默认为 1920×1080 横屏。",
-            "- 左下角预留直径 300px 的圆形数字人区域。",
+            f"- 画布为 {get_in(profile, 'layout.canvas.width')}×{get_in(profile, 'layout.canvas.height')}。",
+            (
+                f"- 数字人安全区由 Profile 定义：{get_in(profile, 'layout.avatar_safe_zone.shape')}，"
+                f"尺寸 {get_in(profile, 'layout.avatar_safe_zone.size')}。"
+                if get_in(profile, "layout.avatar_safe_zone.enabled", False)
+                else "- 当前 Profile 未启用数字人安全区。"
+            ),
             "- 描述只陈述画面中实际可见的内容，不虚构图片中没有的文字、人物或数据。", "",
         ])
         atomic_text(description_path, description)
-    atomic_text(output_dir / "publishing-copy.md", copy_markdown(args.title, copy))
+    atomic_text(output_dir / "publishing-copy.md", copy_markdown(args.title, copy, display_order))
     visual_assets = load_visual_assets(output_dir)
+    if visual_assets is None:
+        raise RuntimeError("passing project visual-assets.json disappeared during finalization")
     motion_assets = load_motion_assets(output_dir)
     intro_card = load_intro_card(output_dir)
     audio_pipeline_assets = load_audio_pipeline_assets(output_dir)
@@ -479,10 +553,23 @@ def main() -> int:
             "reused_existing": cover_reused,
         },
         "publishing_copy": "publishing-copy.md",
-        "avatar_safe_zone": {"x": 42, "bottom": 28, "size": 300, "shape": "circle"},
+        "publishing": {
+            "platforms": platforms,
+            "cover_style": get_in(profile, "publishing.cover_style", "neutral"),
+        },
+        "profile": {
+            "id": profile.get("profile_id"),
+            "sha256": get_in(profile, "_meta.profile_sha256"),
+        },
     }
+    if get_in(profile, "layout.avatar_safe_zone.enabled", False):
+        manifest["avatar_safe_zone"] = get_in(profile, "layout.avatar_safe_zone")
     if visual_assets is not None:
         manifest["visual_assets"] = visual_assets
+        manifest["visual_assets_manifest"] = {
+            "path": "visual-assets.json",
+            "sha256": sha256(output_dir / "visual-assets.json"),
+        }
     if motion_assets is not None:
         manifest["semantic_motion"] = motion_assets
     if intro_card is not None:

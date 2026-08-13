@@ -32,7 +32,7 @@
 
 ### `basic-stable`（默认）
 
-用于所有批量正式成片。只允许标题/卡片淡入位移、下划线或连线生长、节点出现、单次 CTA 波纹和 `crossfade`/`push-slide`。每场一个主动作、一个辅助动作；不使用镜头移动、3D、景深、扫描光、常驻视差、粒子、shader 或复杂 kinetic type。未选中的高级 DOM、装饰层和转场节点不进入默认构建产物；高级源码只保留给显式高级档。人物可在不同场景改变左右或上角位置，但每场入场完成后保持稳定。
+用于批量正式成片。只使用低成本标题/卡片淡入位移、线条生长、节点出现和 Profile 允许的基础转场；只有 Profile 启用 CTA 动画时才使用对应 primitive。默认不使用镜头移动、3D、景深、扫描光、常驻视差、粒子、shader 或复杂 kinetic type。未选中的高级 DOM、装饰层和转场节点不进入默认构建产物；高级源码只保留给显式高级档。存在人物或插图时，其锚点由 Profile 和 layout variant 决定，入场后保持稳定。
 
 ### `clean`
 
@@ -44,15 +44,15 @@
 
 ### `cinematic`
 
-只在用户明确要求高动态样片或电影级片段时使用。允许一到两个 hero shader transition 或高成本镜头，但仍服从语义 cue、字幕、圆形头像区、布局和降级门禁。不得把该档作为大量视频的默认值。
+只在用户明确要求高动态样片或电影级片段时使用。允许一到两个 hero shader transition 或高成本镜头，但仍服从语义 cue、字幕、布局和降级门禁；Profile 启用数字人安全区时还必须保护该区域。不得把该档作为大量视频的默认值。
 
-具体预算以 `motion-catalog.json` 为准。项目必须把本次 profile、seed 和输入哈希写进 `.hyperframes/semantic-motion.json`，不能根据目录名或临时代码开关高级动效。
+`motion-catalog.json` 提供标准 preset 基线，resolved Profile 的 `motion.hierarchy`、`motion.density`、`motion.transitions`、`motion.layout_policy` 和 `motion.preset_overrides` 形成最终预算。项目必须把有效预算、seed 和输入哈希写进 `.hyperframes/semantic-motion.json`，不能根据目录名或临时代码开关高级动效。
 
 ## 动态布局规则
 
 - 布局由语义角色、可用插图和固定 seed 共同选择，结果写入 motion plan；不按 scene index 机械轮换，也不在浏览器运行时随机。
-- 每集至少使用 3 种 layout variant，相邻场景不得重复；默认禁止人物居中后再左右展开的单一模板。
-- 可选构图包括左人物右内容、右人物左内容、上角人物大画布、全宽流程、偏置编辑式、证据分栏、顶部流程条和卡片场。每个 layout 必须使用预计算 safe boxes。
+- 最少 layout 数、是否允许相邻重复和可用 variant 全部读取 resolved Profile。
+- Catalog 提供人物板书、上角人物、全宽流程、偏置编辑式、证据分栏、顶部流程条和卡片场等候选；项目只使用 Profile 选择且满足资产条件的 variant。每个 layout 必须使用预计算 safe boxes。
 - Storyboard 必须把 `layout_variant` 和 `presenter_anchor` 写入 DOM 与 alignment binding；实现和计划不一致时停止渲染。
 
 ## 语义到动画的映射
@@ -69,7 +69,7 @@
 | Hierarchy | 核心节点先建立，层级或关系线逐层长出 | node activation、标签 lock | hub-and-levels | 静态树 + 逐层高亮 |
 | Example | 证据卡按句子依次组装 | 插图慢推、重点圈画 | staggered evidence | 普通 card cascade |
 | Conclusion | 已出现的节点收束到一句结论 | claim land、soft focus pull | convergence to claim | 结论卡落位 |
-| CTA | 卡片入场 → 箭头展开 → 单次波纹 | 一次关键词亮起 | 右侧 CTA，左下圆区净空 | 卡片 + 箭头 |
+| CTA | 卡片入场 → 箭头展开 → 单次波纹 | 一次关键词亮起 | CTA 与 Profile 数字人安全区分离 | 卡片 + 箭头 |
 
 选型时同时看 `semantic_role + data_shape + 可用安全区 + profile 能力`。低置信度时使用 `statement` 的低风险方案，不随机挑最炫的效果。warning 禁止抖动、频闪和循环；metric 禁止显示原稿没有的中间含义；CTA 只能触发一次。
 
@@ -133,14 +133,11 @@
 
 ## 布局与无遮挡
 
-默认 1920×1080 safe zones：
+画布尺寸、数字人区域、字幕区域、场景标题区和内容区必须来自 resolved profile 的
+`layout.canvas`、`layout.safe_boxes` 与 `layout.avatar_safe_zone`。规划器不得复制坐标默认值；
+缺少必要区域时应停止并要求补全 Profile。
 
-- 圆形数字人：`x=42..342, y=752..1052`。
-- 正式字幕：默认 `x>=368`、`y≈900..1052`，实际高度以 caption renderer 为准。
-- 场景标题：上方独立区域。
-- illustration/media、核心卡和正文内容分别分区。
-
-规划阶段先写 `layout.safe_boxes`；实现后必须检查完整运动路径的 swept bbox，而不只是起点和终点。人物脸、手、动作、场景标题、字幕和头像圆都是 protected region。多图组合必须声明 `intentional_composite_id`，否则任何相交都判失败。
+规划阶段先写 `layout.safe_boxes`；实现后必须检查完整运动路径的 swept bbox，而不只是起点和终点。人物脸、手、动作、场景标题、字幕和数字人安全区都是 protected region。多图组合必须声明 `intentional_composite_id`，否则任何相交都判失败。
 
 ## HyperFrames 实现约束
 
@@ -195,17 +192,17 @@ planner 只生成 `status=draft`。调用方结合全文、approved prosody、ca
 ## 规划与验证顺序
 
 1. 完成并通过 audio boundary gate。
-2. 完成 `ian-xiaomu-illustrations` shot list 与 visual-assets gate。
+2. 若 Profile 启用视觉资产，完成所选 provider 的 shot list 与 visual-assets gate。
 3. 用 `plan_semantic_motion.py` 生成 `.hyperframes/semantic-motion.json`。
 4. 人工/代理审核语义角色、anchor、hero、布局和 intentional hold，设置 `status=approved`。
 5. 用 `validate_semantic_motion.py --require-approved` 生成 `.hyperframes/motion-qc.json`；失败就停止 storyboard 和 render。
 6. 按 motion plan 写 modular HyperFrames：host 负责转场，scene composition 负责镜内语义动作。
 7. 运行 HyperFrames check、布局检查和关键快照。
-8. 渲染 MP4 后再次核对成片字幕、圆区、静帧、转场和 A/V 同步。
+8. 渲染 MP4 后再次核对成片字幕、数字人安全区、静帧、转场和 A/V 同步。
 
 ## 批量生产的一致性和变化
 
-- 系列固定字体、调色板、线条、圆角、字幕、CTA 和 motion profile。
+- 同一 resolved profile 固定字体、调色板、线条、圆角、字幕、CTA 和 motion preset。
 - 同一集只使用一套 transition grammar。
 - 相邻场景不要连续使用完全相同的 hero motion；同类语义从 catalog 的候选中按稳定 seed 轮换。
 - 同一系列可以记录 `series-motion-history.json`，限制连续模板和 hero 重复；该历史影响候选排序，不改变语义正确性。
@@ -220,7 +217,7 @@ planner 只生成 `status=draft`。调用方结合全文、approved prosody、ca
 - 每场 establish、hero 开始、hero payoff、场尾。
 - 每个 metric、warning、comparison 和重大 concept turn。
 - 所有转场的中点与结束帧。
-- CTA 卡片、箭头完成和波纹结束。
+- Profile 启用 CTA 动画时，检查 CTA 卡片、箭头完成和波纹结束。
 - 封面候选帧。
 
-必须确认：没有空白/白闪、没有元素突然复活、图片和标题不遮挡、字幕不与圆区相交、重点动画没有早于对应口播、画面没有因持续漂移而妨碍阅读。技术 QC 通过不能替代这些视觉检查。
+必须确认：没有空白/白闪、没有元素突然复活、图片和标题不遮挡、字幕不与数字人安全区相交、重点动画没有早于对应口播、画面没有因持续漂移而妨碍阅读。技术 QC 通过不能替代这些视觉检查。

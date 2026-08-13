@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_id": "voxcpm2-natural-stable-v1",
+  "profile_id": "continuous-narration-stable-v1",
   "analysis": {
     "sample_rate": 16000,
     "speech_gate_dbfs": -32.0,
@@ -41,17 +41,6 @@
     "hard_global_retime_range": [0.95, 1.05],
     "chunk_fallback_max_duration_s": 60,
     "chunk_fallback_overlap_context_s": 2.5
-  },
-  "voice_clone": {
-    "mode": "voxcpm2_ultimate_cloning",
-    "source_path": "/Users/jaycehuang/Library/CloudStorage/SynologyDrive-Obsidian/66_自媒体/木哥原始音频/木哥音频.mp3",
-    "prompt_wav_path": "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/audio/muge-golden-prompt-v1.wav",
-    "reference_wav_path": "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/audio/muge-golden-prompt-v1.wav",
-    "prompt_text": "大家在去做GEO的时候，为了让所有的AI平台都去推荐你，一定是全平台的分发而不是只能铺一个渠道。",
-    "extract_start_s": 310.95,
-    "extract_duration_s": 8.2,
-    "require_complete_sentence": true,
-    "manifest_path": "/Users/jaycehuang/obsidian-proj/videos/voxcpm2-voice-reference/audio/muge-golden-prompt-v1.json"
   },
   "post_processing": {
     "sentence_gain_limit_db": 3.0,

@@ -41,6 +41,15 @@ def main() -> int:
         for event in events
         if isinstance(event, dict) and event.get("cache_hit") is not True
     )
+    failed_event_count = sum(
+        1 for event in events
+        if isinstance(event, dict) and event.get("status") == "fail"
+    )
+    terminal_events = [
+        event for event in events
+        if isinstance(event, dict) and event.get("stage") == "pipeline_complete"
+    ]
+    terminal_status = terminal_events[-1].get("status") if terminal_events else None
     payload.update(
         {
             "wall_clock_finished_at": finished.isoformat(),
@@ -50,13 +59,19 @@ def main() -> int:
                 1 for event in events
                 if isinstance(event, dict) and event.get("cache_hit") is True
             ),
-            "failed_event_count": sum(
-                1 for event in events
-                if isinstance(event, dict) and event.get("status") == "fail"
-            ),
+            "failed_event_count": failed_event_count,
+            "recovered_failure_count": failed_event_count if terminal_status == "pass" else 0,
         }
     )
-    payload["status"] = "pass" if payload["failed_event_count"] == 0 else "fail"
+    # Candidate rejection and failed attempts are expected parts of an
+    # adaptive pipeline. An explicit terminal event records whether all final
+    # gates and delivery passed; historical failures remain counted for cost
+    # and reliability analysis instead of poisoning the final status.
+    payload["status"] = (
+        terminal_status
+        if terminal_status in {"pass", "fail"}
+        else ("pass" if failed_event_count == 0 else "fail")
+    )
     atomic_json(path, payload)
     print(
         json.dumps(
