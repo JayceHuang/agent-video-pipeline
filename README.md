@@ -414,3 +414,7 @@ delivery/audio/*.mp3
 - [references/layout-box-schema.md](references/layout-box-schema.md)：布局框与遮挡验证。
 
 如果你要接入新的 TTS、ASR、插画或渲染 provider，优先新增外部 adapter/profile，并保持上述产物、SHA、批准状态和 gate 契约不变。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源。你可以使用、复制、修改、合并、发布、分发、再授权和销售本软件的副本，但必须保留原版权声明与许可声明。完整条款请查看 [LICENSE](LICENSE)。
