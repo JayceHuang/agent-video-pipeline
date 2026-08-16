@@ -4,6 +4,8 @@
 
 最省事的方式是把这个仓库作为 Codex Skill 使用。你只需要准备工作区、配置文件和口播稿，后面的检查与执行交给 Codex。
 
+这份 README 只介绍最快的使用方法。配置原理、完整操作步骤和案例说明，请阅读[飞书完整教程](https://my.feishu.cn/docx/UOnkd0xPPoLNOrxSGrLcNGgGnGe?from=from_copylink)。
+
 ## 开始前准备
 
 - Python 3.10 或更高版本
@@ -194,6 +196,7 @@ my-video/
 
 ## 详细文档
 
+- [飞书完整教程](https://my.feishu.cn/docx/UOnkd0xPPoLNOrxSGrLcNGgGnGe?from=from_copylink)　从环境准备到配置、生成和调整的完整说明
 - [SKILL.md](SKILL.md)　完整执行规则
 - [Profile 契约](references/profile-contract.md)　配置合并与隐私边界
 - [工作流契约](references/workflow-contract.md)　阶段、缓存、交付和质量检查
