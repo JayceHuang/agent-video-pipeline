@@ -1,6 +1,6 @@
-# 通用中性基线：保证 Skill 在没有个人 Profile 时仍有完整、可校验的行为。
+# 通用中性基线：与外部中性工作区 Profile 合并后提供完整、可校验的行为。
 # 禁止在这里写入姓名、个人 CTA、品牌文案、本机路径或固定第三方 provider。
-# 合并优先级：本文件 < 外部个人 Profile < runtime.local.yaml < 项目级覆盖。
+# 合并优先级：本文件 < 外部工作区 Profile < runtime.local.yaml < 项目级覆盖。
 profile_version: 1
 profile_id: standard
 
