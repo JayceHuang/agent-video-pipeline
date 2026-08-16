@@ -1,0 +1,32 @@
+# Sanitized neutral workspace profile template.
+# Do not add author names, fixed CTA text, brand copy, private asset paths, or credentials here.
+profile_version: 1
+profile_id: __PROFILE_ID__
+
+content:
+  language: auto
+  audience: general
+  tone: clear-conversational
+
+voice:
+  provider: null
+  engine: null
+
+motion:
+  default_profile: basic-stable
+
+layout:
+  illustration_skill:
+    enabled: false
+  avatar_safe_zone:
+    enabled: false
+
+episode:
+  final_cta: ""
+
+publishing:
+  platforms: []
+  tags: []
+
+delivery:
+  root: null

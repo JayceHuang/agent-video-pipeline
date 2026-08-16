@@ -23,6 +23,7 @@
 
 几个不可绕过的规则：
 
+- 工作区必须存在完整的 `.agent-video/` 集中配置根目录，否则流水线拒绝运行。
 - 每个项目先冻结一份 .pipeline/resolved-profile.json，下游只读这份配置。
 - audio/output/narration_master.wav 是字幕、动画、数字人和成片时长的唯一时间基准。
 - 音频、retime 或文本改变后，必须重新 forced-align；不能把旧字幕按比例平移。
@@ -70,16 +71,50 @@ Windows PowerShell 可将 source 命令换成 .venv/Scripts/Activate.ps1。
 
 ## 2. 准备外部配置
 
-不要把模型、授权声音、个人 prompt、密钥或本机绝对路径写进本仓库。推荐在项目工作区建立：
+不要把模型、授权声音、个人 prompt、密钥或本机绝对路径写进本仓库。第一次使用时先运行跨平台初始化脚本：
+
+仓库内置两份可公开发布的脱敏模板：
+
+~~~text
+references/templates/workspace.example.yaml
+references/templates/runtime.local.example.yaml
+~~~
+
+初始化脚本以它们作为唯一模板来源，在工作区外部生成实际配置。模板只有中性值和占位符，不包含任何用户身份、本机路径、凭据或私有素材。
+
+macOS / Linux：
+
+~~~bash
+python3 scripts/init_config_root.py \
+  --workspace /absolute/path/to/workspace
+~~~
+
+Windows PowerShell 或 CMD：
+
+~~~powershell
+py scripts\init_config_root.py `
+  --workspace "D:\path\to\workspace"
+~~~
+
+脚本默认生成中性的 `profiles/workspace.yaml`，其中 `profile_id: workspace`，不会预填作者姓名、品牌、人物 IP、CTA 或其他个人信息；同时把当前执行它的 Python 写入 `pipeline_runtime.python`。只有需要多个外部 Profile 时才传 `--profile-id <custom-id>`。需要独立声音环境时增加 `--tts-python <解释器路径>`，使用本地模型时增加 `--model-path <模型目录>`。脚本只创建缺失文件，重复运行不会覆盖已经编辑的 Profile 或 runtime。
+
+初始化后会在工作区建立：
 
 ~~~text
 .agent-video/
-├── profiles/<profile-id>.yaml     # 可共享的个人风格
+├── profiles/workspace.yaml        # 标准化、中性的工作区模板
 ├── runtime.local.yaml              # 本机解释器、模型、对齐器和凭据
-└── resolved/                       # 可选的解析缓存
+├── projects/                       # 可选的项目覆盖
+├── assets/
+│   ├── voice/
+│   ├── avatar/
+│   ├── character/
+│   ├── logo/
+│   └── music/
+└── resolved/                       # 解析缓存
 ~~~
 
-runtime.local.yaml 和 resolved 文件应加入你自己的 .gitignore。最少需要让流水线知道两个解释器：
+这些目录及 `runtime.local.yaml` 缺一不可。工作区 Profile、项目覆盖和 runtime 不能散放到视频项目目录；解析器会检查路径边界，失败时不生成 resolved profile。runtime.local.yaml 和 resolved 文件应加入你自己的 .gitignore。最少需要让流水线知道流水线解释器；声音 provider 启用时还需对应解释器：
 
 ~~~yaml
 pipeline_runtime:
@@ -90,11 +125,11 @@ tts_runtime:
   # generator、model_path、aligner_python 等按 provider 需要填写
 ~~~
 
-个人 Profile 可以覆盖语言、口吻、目标 CPM、声音策略、画布、字幕、动效 preset、插画 provider、数字人安全区、封面和发布文案。合并顺序是：
+外部工作区 Profile 可以按用户明确选择覆盖语言、口吻、目标 CPM、声音策略、画布、字幕、动效 preset、插画 provider、数字人安全区、封面和发布文案。初始化模板本身保持中性。合并顺序是：
 
 ~~~text
 references/default-profile.yaml
-  < 外部个人 Profile
+  < 外部工作区 Profile
   < 本机 runtime.local.yaml
   < 可选项目级配置
 ~~~
@@ -109,18 +144,13 @@ export PIPELINE_PY=/absolute/path/to/pipeline-venv/bin/python
 export PROJECT=/absolute/path/to/videos/my-video
 
 "$PIPELINE_PY" "$SKILL_DIR/scripts/resolve_profile.py" \
-  --profile /absolute/path/to/.agent-video/profiles/my-profile.yaml \
-  --runtime /absolute/path/to/.agent-video/runtime.local.yaml \
-  --project-config /absolute/path/to/my-video.yaml \
+  --config-root /absolute/path/to/workspace/.agent-video \
+  --profile-id workspace \
+  --project-config /absolute/path/to/workspace/.agent-video/projects/my-video.yaml \
   --project "$PROJECT"
 ~~~
 
-不需要个性化配置时，可以只用中性默认值：
-
-~~~bash
-"$PIPELINE_PY" "$SKILL_DIR/scripts/resolve_profile.py" \
-  --project "$PROJECT"
-~~~
+也可以省略 `--config-root`，解析器会从项目目录向上查找最近的 `.agent-video/`；或者通过 `AGENT_VIDEO_CONFIG_ROOT` 指定。省略 `--profile-id` 时，`profiles/` 内必须恰好只有一个 YAML Profile，否则解析器拒绝猜测。不能只用 Skill 内的中性默认值启动流水线。
 
 解析后必须存在：
 

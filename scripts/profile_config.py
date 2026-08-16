@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,10 @@ from typing import Any
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROFILE = SKILL_ROOT / "references/default-profile.yaml"
 PROFILE_SCHEMA = SKILL_ROOT / "references/profile-schema.json"
+CONFIG_ROOT_ENV = "AGENT_VIDEO_CONFIG_ROOT"
+CONFIG_ROOT_NAME = ".agent-video"
+CONFIG_CONTRACT_VERSION = 1
+REQUIRED_CONFIG_DIRS = ("profiles", "projects", "assets", "resolved")
 ALLOWED_TOP_LEVEL = {
     "profile_version",
     "profile_id",
@@ -29,6 +34,75 @@ ALLOWED_TOP_LEVEL = {
     "avatar",
     "_meta",
 }
+
+
+def is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_config_root(root: Path) -> list[str]:
+    root = root.expanduser().resolve()
+    errors: list[str] = []
+    if root.name != CONFIG_ROOT_NAME:
+        errors.append(f"config root must be named {CONFIG_ROOT_NAME}: {root}")
+    if not root.is_dir():
+        errors.append(f"config root directory is missing: {root}")
+        return errors
+    for name in REQUIRED_CONFIG_DIRS:
+        path = root / name
+        if not path.is_dir():
+            errors.append(f"required config directory is missing: {path}")
+        elif path.is_symlink() or not is_relative_to(path.resolve(), root):
+            errors.append(f"config directory cannot escape through a symlink: {path}")
+    runtime = root / "runtime.local.yaml"
+    if not runtime.is_file():
+        errors.append(f"required runtime config is missing: {runtime}")
+    elif runtime.is_symlink() or not is_relative_to(runtime.resolve(), root):
+        errors.append(f"runtime config cannot escape through a symlink: {runtime}")
+    return errors
+
+
+def discover_config_root(project: Path, explicit: Path | None = None) -> Path:
+    """Resolve the mandatory centralized .agent-video directory."""
+    if explicit is not None:
+        candidate = explicit.expanduser().resolve()
+    elif os.environ.get(CONFIG_ROOT_ENV):
+        candidate = Path(os.environ[CONFIG_ROOT_ENV]).expanduser().resolve()
+    else:
+        project_path = project.expanduser().resolve()
+        start = project_path if project_path.is_dir() else project_path.parent
+        candidate = next(
+            (
+                parent / CONFIG_ROOT_NAME
+                for parent in (start, *start.parents)
+                if (parent / CONFIG_ROOT_NAME).is_dir()
+            ),
+            None,
+        )
+        if candidate is None:
+            raise FileNotFoundError(
+                f"mandatory {CONFIG_ROOT_NAME} config root not found from {project_path}; "
+                f"create it in a workspace ancestor, pass --config-root, or set {CONFIG_ROOT_ENV}"
+            )
+    errors = validate_config_root(candidate)
+    if errors:
+        raise ValueError("invalid centralized config root: " + "; ".join(errors))
+    return candidate
+
+
+def require_config_path(path: Path, root: Path, directory: str, label: str) -> Path:
+    """Require an external config file to live in its canonical config-root directory."""
+    resolved = path.expanduser().resolve()
+    allowed = (root / directory).resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(resolved)
+    if not is_relative_to(resolved, allowed):
+        raise ValueError(f"{label} must be stored under {allowed}: {resolved}")
+    return resolved
 
 
 def sha256_file(path: Path) -> str:
@@ -217,6 +291,17 @@ def validate_resolved_profile(profile: dict[str, Any], path: Path) -> list[str]:
     if not isinstance(meta, dict) or not str(meta.get("profile_sha256", "")).strip():
         errors.append("resolved profile is missing _meta.profile_sha256")
     else:
+        if meta.get("config_contract_version") != CONFIG_CONTRACT_VERSION:
+            errors.append(
+                "resolved profile does not satisfy the centralized .agent-video config contract; "
+                "run resolve_profile.py again"
+            )
+        config_root_value = str(meta.get("config_root", "")).strip()
+        config_root = Path(config_root_value).expanduser().resolve() if config_root_value else None
+        if config_root is None:
+            errors.append("resolved profile is missing _meta.config_root")
+        else:
+            errors.extend(validate_config_root(config_root))
         expected_sha = str(meta["profile_sha256"])
         actual_sha = canonical_sha256({key: value for key, value in profile.items() if key != "_meta"})
         if expected_sha != actual_sha:
@@ -228,15 +313,38 @@ def validate_resolved_profile(profile: dict[str, Any], path: Path) -> list[str]:
         if not isinstance(sources, list) or not sources:
             errors.append("resolved profile is missing source provenance")
         else:
+            role_counts = {role: 0 for role in ("base", "profile", "runtime", "project")}
             for index, source in enumerate(sources, start=1):
                 if not isinstance(source, dict):
                     errors.append(f"resolved profile source {index} is invalid")
                     continue
-                source_path = Path(str(source.get("path", ""))).expanduser().absolute()
+                source_path = Path(str(source.get("path", ""))).expanduser().resolve()
+                role = str(source.get("role", ""))
+                if role in role_counts:
+                    role_counts[role] += 1
                 if not source_path.is_file():
                     errors.append(f"resolved profile source is missing: {source_path}")
                 elif source.get("sha256") != sha256_file(source_path):
                     errors.append(f"resolved profile source is stale: {source_path}")
+                if config_root is not None:
+                    if role == "base" and source_path != DEFAULT_PROFILE.resolve():
+                        errors.append(f"base profile must be the Skill neutral default: {source_path}")
+                    elif role == "profile" and not is_relative_to(source_path, config_root / "profiles"):
+                        errors.append(f"workspace profile escaped centralized profiles directory: {source_path}")
+                    elif role == "runtime" and source_path != config_root / "runtime.local.yaml":
+                        errors.append(f"runtime config must be {config_root / 'runtime.local.yaml'}")
+                    elif role == "project" and not is_relative_to(source_path, config_root / "projects"):
+                        errors.append(f"project config escaped centralized projects directory: {source_path}")
+                    elif role not in {"base", "profile", "runtime", "project"}:
+                        errors.append(f"resolved profile source {index} has unknown role: {role or '<missing>'}")
+            if role_counts["base"] != 1:
+                errors.append("resolved profile must contain exactly one base source")
+            if role_counts["profile"] < 1:
+                errors.append("resolved profile must contain at least one centralized workspace profile")
+            if role_counts["runtime"] != 1:
+                errors.append("resolved profile must contain exactly one centralized runtime source")
+            if role_counts["project"] > 1:
+                errors.append("resolved profile cannot contain more than one project override")
     return errors
 
 

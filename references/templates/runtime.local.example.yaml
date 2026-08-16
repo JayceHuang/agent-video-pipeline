@@ -1,0 +1,10 @@
+# Sanitized machine-local runtime template.
+# The initializer substitutes only values detected or explicitly supplied on the user's machine.
+# Never commit the generated runtime.local.yaml.
+pipeline_runtime:
+  python: __PIPELINE_PYTHON__
+
+tts_runtime:
+  generator_python: __TTS_PYTHON__
+  model_path: __MODEL_PATH__
+  aligner_python: null

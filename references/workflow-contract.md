@@ -2,7 +2,7 @@
 
 ## 配置与输入
 
-每个项目必须先用 `scripts/resolve_profile.py` 把中性默认值、可选个人 Profile、本机 runtime 和项目覆盖冻结为 `.pipeline/resolved-profile.json`。流水线只读取冻结文件；个人身份、声音资产、CTA、视觉 provider、画布、数字人位置和交付路径不得写回 Skill。
+每个项目必须先用 `scripts/resolve_profile.py` 把中性默认值、必需的外部工作区 Profile、本机 runtime 和项目覆盖冻结为 `.pipeline/resolved-profile.json`。流水线只读取冻结文件；个人身份、声音资产、CTA、视觉 provider、画布、数字人位置和交付路径不得写回 Skill。初始化生成的 `profiles/workspace.yaml` 必须保持标准化和中性，个性化内容只有在用户明确选择时才添加。
 
 输入可以是：
 

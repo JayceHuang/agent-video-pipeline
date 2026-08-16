@@ -7,19 +7,62 @@ description: Orchestrate a configurable, debuggable local pipeline from approved
 
 编排可复现、可调试、可增量重建的本地讲解视频。Skill 只保存通用流程、契约、Schema、provider adapter 和 QC；任何个人风格或本机路径必须通过外部配置注入。
 
+## 强制统一外部配置根目录
+
+流水线没有合法的集中式 `.agent-video/` 时禁止运行。配置根目录必须位于项目目录的某一级祖先，或通过 `--config-root` / `AGENT_VIDEO_CONFIG_ROOT` 显式指定，并且必须完整包含：
+
+```text
+.agent-video/
+├── profiles/workspace.yaml
+├── runtime.local.yaml
+├── projects/
+├── assets/
+└── resolved/
+```
+
+外部工作区 Profile 只能来自 `profiles/`，项目覆盖只能来自 `projects/`，本机 runtime 只能使用根目录下唯一的 `runtime.local.yaml`。需要时，声音、人像、人物 IP、Logo、音乐等复用资产统一放进 `assets/`；项目目录不得再维护工作区配置副本。初始化生成的模板必须保持中性，不得预填作者姓名、人物 IP、CTA、品牌或其他个人信息。
+
+Skill 内只保存可公开发布的脱敏模板：
+
+```text
+references/templates/
+├── workspace.example.yaml
+└── runtime.local.example.yaml
+```
+
+初始化脚本必须从这两份模板生成外部实例，不能在代码里另存一套字段。Skill 内模板只含中性默认值和占位符；真实解释器、模型、凭据引用、品牌与授权资产只能写入工作区的 `.agent-video/`。
+
+第一次使用时，必须先运行纯 Python、跨平台的初始化脚本。它只创建缺失内容，重复执行不会覆盖已有 Profile 或 runtime：
+
+```bash
+# macOS / Linux
+python3 scripts/init_config_root.py \
+  --workspace <workspace-dir>
+```
+
+```powershell
+# Windows PowerShell / CMD
+py scripts\init_config_root.py `
+  --workspace <workspace-dir>
+```
+
+默认生成 `profiles/workspace.yaml`，其中 `profile_id` 为 `workspace`。只有用户明确需要多个外部 Profile 时才传 `--profile-id <custom-id>`。需要指定独立的声音环境时增加 `--tts-python <path>`，本地模型增加 `--model-path <path>`；脚本默认把当前执行它的 Python 写入 `pipeline_runtime.python`。初始化后先审核中性工作区 Profile、runtime 和授权资产，再冻结项目配置。
+
+Codex 接到运行请求时必须先检查 `.agent-video/`。如果不存在或不完整：停止生产，说明将生成的位置，使用 `init_config_root.py` 初始化，并引导用户只补充无法安全自动检测的选项；不得把真实配置写回 Skill。初始化完成后必须再由 `resolve_profile.py` 验证并冻结，验证失败时不得进入 TTS、插图、渲染或数字人阶段。
+
 ## 先冻结配置
 
 每个项目在高成本操作前必须生成唯一的 resolved profile：
 
 ```bash
 "<pipeline_runtime.python>" scripts/resolve_profile.py \
-  --profile <personal-profile.yaml> \
-  --runtime <runtime.local.yaml> \
-  --project-config <optional-project.yaml> \
+  --config-root <workspace>/.agent-video \
+  --profile-id workspace \
+  --project-config <workspace>/.agent-video/projects/<optional-project>.yaml \
   --project <project-dir>
 ```
 
-首次运行从外部 `runtime.local.yaml` 读取 `pipeline_runtime.python`；后续所有通用 Python 控制脚本都使用 resolved profile 中的该解释器。未配置本机 runtime 时，使用已经安装本 Skill `requirements.txt` 的 Python。不要静默退回缺少依赖的系统 `python3`。不需要个性化时省略个人 Profile，只使用 `references/default-profile.yaml`。下游脚本优先读取 `<project>/.pipeline/resolved-profile.json`，并把 Profile SHA 写入缓存键和报告。配置规则见 [references/profile-contract.md](references/profile-contract.md)。
+首次运行从统一根目录的 `runtime.local.yaml` 读取 `pipeline_runtime.python`；缺少集中配置根目录、外部工作区 Profile、runtime 或规定目录时立即失败，不能回退到散落在项目里的配置或只用 Skill 默认值。后续所有通用 Python 控制脚本都使用 resolved profile 中的该解释器。下游脚本优先读取 `<project>/.pipeline/resolved-profile.json`，并校验其中的配置契约版本、配置根目录、来源角色与 SHA；旧式 resolved profile 必须重新生成。配置规则见 [references/profile-contract.md](references/profile-contract.md)。
 
 ## 不可变质量规则
 
@@ -29,6 +72,7 @@ description: Orchestrate a configurable, debuggable local pipeline from approved
 - 已有本地资产默认复用，除非用户明确要求替换。
 - 最终交付必须包含视频、封面、描述、发布文案、manifest、阶段 QC 与耗时记录。
 - Profile 可以改变风格与规格，不能关闭哈希新鲜度、音画同步、边界安全和交付完整性检查。
+- `.agent-video` 集中配置契约无效时停止所有真实流水线阶段。
 
 ## 阶段
 
@@ -130,6 +174,8 @@ Profile 启用 provider 时，先让 provider 把初始化 manifest 更新为 `c
 
 ## 资源
 
+- 配置初始化：`scripts/init_config_root.py`
+- 脱敏模板：`references/templates/workspace.example.yaml`、`references/templates/runtime.local.example.yaml`
 - Profile：[references/profile-contract.md](references/profile-contract.md)、[references/profile-schema.json](references/profile-schema.json)
 - 通用默认值：[references/default-profile.yaml](references/default-profile.yaml)
 - 工作流：[references/workflow-contract.md](references/workflow-contract.md)
