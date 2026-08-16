@@ -36,13 +36,13 @@ references/templates/
 
 ```bash
 # macOS / Linux
-python3 scripts/init_config_root.py \
+python scripts/init_config_root.py \
   --workspace <workspace-dir>
 ```
 
 ```powershell
-# Windows PowerShell / CMD
-py scripts\init_config_root.py `
+# Windows PowerShell
+python scripts\init_config_root.py `
   --workspace <workspace-dir>
 ```
 
