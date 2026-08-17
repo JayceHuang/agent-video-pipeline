@@ -1,10 +1,8 @@
 # agent-video-pipeline
 
+完整版视频教程，请阅读[飞书完整教程](https://my.feishu.cn/docx/UOnkd0xPPoLNOrxSGrLcNGgGnGe?from=from_copylink)。
+
 把已经确认的口播稿做成带配音、字幕、画面、动画和质量检查的视频。需要时还能继续合成数字人。
-
-最省事的方式是把这个仓库作为 Codex Skill 使用。你只需要准备工作区、配置文件和口播稿，后面的检查与执行交给 Codex。
-
-这份 README 只介绍最快的使用方法。配置原理、完整操作步骤和案例说明，请阅读[飞书完整教程](https://my.feishu.cn/docx/UOnkd0xPPoLNOrxSGrLcNGgGnGe?from=from_copylink)。
 
 ## 开始前准备
 
